@@ -18,6 +18,7 @@ git cms-addpkg RecoHGCal
 git remote add moanwar https://github.com/moanwar/cmssw
 git fetch moanwar
 git cherry-pick ae98c9b32ba
+scram b -j  10
 ```
 ### 2. Run TICL v5 workflows :
 For TICLv5 workflows, there are a few workflows that should run with `*.203` to activate the TICLv5 procModifier. These workflows mainly include particle gun sim, from-vertex samples, and CloseBy samples from the HGCAL surface. For track inclusion, the from-vertex samples should be used.
