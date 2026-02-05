@@ -7,7 +7,7 @@ This README contains the preprocessing pipeline to convert TICLDumper reco data 
 
 ## Quick Start
 
-### 1. Environment Setup (any uptodate cmssw release)
+### 1. Environment Setup (any recent cmssw release)
 ```bash
 cmsrel CMSSW_16_0_0
 cd CMSSW_16_0_0/src
@@ -18,7 +18,7 @@ git cms-addpkg RecoHGCal
 git remote add moanwar https://github.com/moanwar/cmssw
 git fetch moanwar
 git cherry-pick ae98c9b32ba
-
+```
 ### 2. Run TICL v5 workflows :
 For TICLv5 workflows, there are a few workflows that should run with `*.203` to activate the TICLv5 procModifier. These workflows mainly include particle gun sim, from-vertex samples, and CloseBy samples from the HGCAL surface. For track inclusion, the from-vertex samples should be used.
 
@@ -41,11 +41,11 @@ process.ticlDumper.saveTracks = True
 process.ticlDumper.saveSuperclustering = False
 process.ticlDumper.saveRecoSuperclusters = False
 Then run: cmsRun step3.py
-
+```  
 ### 3. Process Output to Graph Format
 ```bash
 python3 ticl_graph_preprocess.py --input histo.root --output ticl_graph.pkl --num-events 10
-
+```  
 ## Graph Structure
 
 The TICL graph is a directed graph G = (Nodes, Edges) designed to match MLPF input conventions:
@@ -116,3 +116,4 @@ ycand    # [n_elements x n_particle_features] - Baseline PF labels
 ## 3. Run the Preprocessing
 ```bash
 python3 postprocessing_ticl.py --input histo.root --output ticl_graph.pkl --num-events 100
+```  
