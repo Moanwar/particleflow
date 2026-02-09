@@ -8,6 +8,9 @@ import pickle
 from tqdm import tqdm
 from collections import defaultdict
 
+#python3 postprocessing_ticl.py --input 211_0pu.txt --output ticl_graph_data_pion_0pu.pkl
+#The current features included are : eta/phi/pt/energy of tracks and tracksters
+
 # To prevent threading issues
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -108,12 +111,12 @@ def read_event(trees, iev):
     ev["simcan_simTracksterCPIndex"] = simcan_arrays["simTICLCandidate_simTracksterCPIndex"][0]
 
     track_arrays = trees['track'].arrays(
-        ["track_pt", "track_p", "track_hgcal_eta", "track_hgcal_phi", "track_charge"],
+        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_charge"],
         entry_start=iev, entry_stop=iev+1, library="np"
     )
     ev["track_pt"] = track_arrays["track_pt"][0]
     ev["track_p"] = track_arrays["track_p"][0]
-    ev["track_eta"] = track_arrays["track_hgcal_eta"][0]
+    ev["track_eta"] = track_arrays["track_eta"][0]
     ev["track_phi"] = track_arrays["track_hgcal_phi"][0]
     ev["track_charge"] = track_arrays["track_charge"][0]
     
@@ -152,10 +155,12 @@ def collect_cp_element_connections(ev):
                 
                 reco_score = reco_to_sim_scores[trackster_idx][0] if trackster_idx < len(reco_to_sim_scores) and len(reco_to_sim_scores[trackster_idx]) > 0 else 1.0
                 sim_score = sim_to_reco_scores[sim_idx][idx] if sim_idx < len(sim_to_reco_scores) and idx < len(sim_to_reco_scores[sim_idx]) else 1.0
-                
+                if reco_score < 0.6 or sim_score < 0.9:
+                    continue
                 cp_energy = ev["simtkst_energy"][sim_idx]
                 element_energy = ev["ts_energy"][trackster_idx]
                 cp_pid = ev["simtkst_pdgid"][sim_idx]
+                cp_eta = ev["simtkst_eta"][sim_idx]
                 
                 elem_weight = shared_energy / element_energy if element_energy > 0 else 0
                 cp_fraction = shared_energy / cp_energy if cp_energy > 0 else 0
@@ -164,6 +169,7 @@ def collect_cp_element_connections(ev):
                     'cp_idx': sim_idx,
                     'cp_pid': cp_pid,
                     'cp_energy': cp_energy,
+                    'cp_eta': cp_eta,
                     'element_idx': trackster_idx,
                     'element_type': 4,
                     'shared_energy': shared_energy,
@@ -181,19 +187,20 @@ def collect_cp_element_connections(ev):
         if len(track_indices) == 0:
             continue
             
-        cp_energy = ev["simtkst_energy"][cp_idx]
-        cp_pid = ev["simtkst_pdgid"][cp_idx]
-        
+        cp_energy = ev["simcan_energy"][cp_idx]
+        cp_pid = ev["simcan_pdgid"][cp_idx]
+        cp_eta = ev["simcan_eta"][cp_idx]
+
         for track_idx in track_indices:
             if track_idx < 0 or track_idx >= n_tracks:
                 continue
             
             track_p = ev["track_p"][track_idx]
-            
             connections.append({
                 'cp_idx': cp_idx,
                 'cp_pid': cp_pid,
                 'cp_energy': cp_energy,
+                'cp_eta': cp_eta,
                 'element_idx': n_ts + track_idx,
                 'element_type': 1,
                 'shared_energy': track_p,
@@ -206,90 +213,156 @@ def collect_cp_element_connections(ev):
             })
     
     return connections
-
 def split_caloparticles_tracksters(connections, ev):
-    """Split CPs that match multiple elements."""
+    """Split CPs that match multiple elements """
+    
     cp_groups = defaultdict(list)
     for conn in connections:
         cp_groups[conn['cp_idx']].append(conn)
-    
     split_cps = []
-    new_cp_idx = len(ev["simtkst_energy"])
+    #new_cp_idx = len(ev["simtkst_energy"])
+    new_cp_idx = len(ev["simcan_energy"])
+    # Get track offset for element indexing
+    n_ts = len(ev["ts_energy"])
     
     for cp_idx, conns in cp_groups.items():
-        if len(conns) == 1:
-            conn = conns[0]
-            split_cps.append({
-                'original_idx': cp_idx,
-                'new_idx': cp_idx,
-                'element_idx': conn['element_idx'],
-                'cp_energy': conn['cp_energy'],
-                'cp_pid': conn['cp_pid'],
-                'cp_fraction': 1.0,
-                'is_winner': True
-            })
-        else:
-            cp_pid = conns[0]['cp_pid']
-            cp_energy = conns[0]['cp_energy']
-            is_charged = conns[0]['is_charged']
+        if len(conns) == 0:
+            continue
             
-            tracks = [c for c in conns if c['element_type'] == 1]
-            tracksters = [c for c in conns if c['element_type'] == 4]
+        cp_pid = conns[0]['cp_pid']
+        cp_energy = conns[0]['cp_energy']
+        cp_eta = conns[0]['cp_eta']  
+        is_charged = conns[0]['is_charged']
+        # ==== eta SIGN VALIDATION FOR ALL ELEMENTS ====
+        valid_elements = []
+        mismatched_elements = []
+
+        for conn in conns:
+            elem_idx = conn['element_idx']
+            elem_eta = None
             
-            if is_charged and tracks:
-                if len(tracks) == 1:
-                    split_cps.append({
-                        'original_idx': cp_idx,
-                        'new_idx': new_cp_idx,
-                        'element_idx': tracks[0]['element_idx'],
-                        'cp_energy': cp_energy,
-                        'cp_pid': cp_pid,
-                        'cp_fraction': 1.0,
-                        'is_winner': True
-                    })
-                    new_cp_idx += 1
-                else:
-                    total_shared = sum(t['shared_energy'] for t in tracks)
-                    for track in tracks:
-                        split_fraction = track['shared_energy'] / total_shared if total_shared > 0 else 1.0 / len(tracks)
-                        split_energy = cp_energy * split_fraction
-                        split_cps.append({
-                            'original_idx': cp_idx,
-                            'new_idx': new_cp_idx,
-                            'element_idx': track['element_idx'],
-                            'cp_energy': split_energy,
-                            'cp_pid': cp_pid,
-                            'cp_fraction': split_fraction,
-                            'is_winner': True
-                        })
-                        new_cp_idx += 1
+            # Get element eta based on type
+            if conn['element_type'] == 1:  # Track
+                track_idx = elem_idx - n_ts
+                if 0 <= track_idx < len(ev["track_eta"]):
+                    elem_eta = ev["track_eta"][track_idx]
+                    
+            elif conn['element_type'] == 4:  # Trackster
+                if 0 <= elem_idx < n_ts:
+                    elem_eta = ev["ts_eta"][elem_idx]
+            
+            # Check eta sign if we have both etas
+            if elem_eta is not None:
+                conn['elem_eta'] = elem_eta  # Store for reference
                 
-                for trackster in tracksters:
-                    split_cps.append({
-                        'original_idx': cp_idx,
-                        'new_idx': new_cp_idx,
-                        'element_idx': trackster['element_idx'],
-                        'cp_energy': 0.0,
-                        'cp_pid': cp_pid,
-                        'cp_fraction': 0.0,
-                        'is_winner': False
-                    })
-                    new_cp_idx += 1
+                if cp_eta * elem_eta > 0:  # Same hemisphere
+                    valid_elements.append(conn)
+                else:
+                    mismatched_elements.append(conn)
             else:
-                total_shared = sum(c['shared_energy'] for c in conns)
-                for conn in conns:
-                    split_fraction = conn['shared_energy'] / total_shared if total_shared > 0 else 1.0 / len(conns)
+                # Can't check eta, but keep with warning
+                print(f"WARNING: Could not get eta for element {elem_idx} (type={conn['element_type']})")
+                valid_elements.append(conn)
+        
+        # Report eta mismatches
+        if mismatched_elements:
+            track_mismatches = [e for e in mismatched_elements if e['element_type'] == 1]
+            trackster_mismatches = [e for e in mismatched_elements if e['element_type'] == 4]
+            
+            print(f"CP {cp_idx} (PID={cp_pid}, eta={cp_eta:.3f}): "
+                  f"Removed {len(mismatched_elements)} elements with eta sign mismatches")
+            if track_mismatches:
+                print(f"  - Tracks: {len(track_mismatches)}")
+            if trackster_mismatches:
+                print(f"  - Tracksters: {len(trackster_mismatches)}")
+        
+        # Separate valid elements by type
+        tracks = [e for e in valid_elements if e['element_type'] == 1]
+        tracksters = [e for e in valid_elements if e['element_type'] == 4]
+        
+        # If no valid elements left after eta check, skip this CP
+        if len(valid_elements) == 0:
+            print(f"CP {cp_idx}: No valid elements after eta check, skipping")
+            continue
+            
+        # If charged particle lost all tracks after eta check, treat as neutral
+        if is_charged and len(tracks) == 0 and len(tracksters) > 0:
+            print(f"CP {cp_idx} : Charged particle that has no track match with it, "
+                  f"but has {len(tracksters)} tracksters - treating as neutral")
+            is_charged = False
+        
+        # ==== SPLITTING LOGIC ====
+        if is_charged and tracks:
+            # Charged particle with valid tracks
+            if len(tracks) == 1:
+                # Single track - give it full CP
+                split_cps.append({
+                    'original_idx': cp_idx,
+                    'new_idx': new_cp_idx,
+                    'element_idx': tracks[0]['element_idx'],
+                    'cp_energy': cp_energy,
+                    'cp_pid': cp_pid,
+                    'cp_fraction': 1.0,
+                    'is_winner': True,
+                    'cp_eta': cp_eta,
+                })
+                new_cp_idx += 1
+                
+            else:
+                # Multiple tracks - split energy proportionally
+                total_shared = sum(t['shared_energy'] for t in tracks)
+                for track in tracks:
+                    split_fraction = track['shared_energy'] / total_shared if total_shared > 0 else 1.0 / len(tracks)
                     split_energy = cp_energy * split_fraction
+                    
                     split_cps.append({
                         'original_idx': cp_idx,
                         'new_idx': new_cp_idx,
-                        'element_idx': conn['element_idx'],
+                        'element_idx': track['element_idx'],
                         'cp_energy': split_energy,
                         'cp_pid': cp_pid,
                         'cp_fraction': split_fraction,
-                        'is_winner': True
+                        'is_winner': True,
+                        'cp_eta': cp_eta,
                     })
                     new_cp_idx += 1
+            
+            # For charged particles, valid tracksters get dummy CPs (0 energy)
+            for trackster in tracksters:
+                split_cps.append({
+                    'original_idx': cp_idx,
+                    'new_idx': new_cp_idx,
+                    'element_idx': trackster['element_idx'],
+                    'cp_energy': 0.0,
+                    'cp_pid': cp_pid,
+                    'cp_fraction': 0.0,
+                    'is_winner': False,
+                    'cp_eta': cp_eta,
+                })
+                new_cp_idx += 1
+                
+        else:
+            # Neutral particles OR charged without valid tracks
+            # Combine all valid elements (tracks + tracksters)
+            all_elements = tracks + tracksters
+            
+            # Split energy among all valid elements proportionally
+            total_shared = sum(elem['shared_energy'] for elem in all_elements)
+            for elem in all_elements:
+                split_fraction = elem['shared_energy'] / total_shared if total_shared > 0 else 1.0 / len(all_elements)
+                split_energy = cp_energy * split_fraction
+                
+                split_cps.append({
+                    'original_idx': cp_idx,
+                    'new_idx': new_cp_idx,
+                    'element_idx': elem['element_idx'],
+                    'cp_energy': split_energy,
+                    'cp_pid': cp_pid,
+                    'cp_fraction': split_fraction,
+                    'is_winner': True,
+                    'cp_eta': cp_eta,
+                })
+                new_cp_idx += 1
     
     return split_cps
 
@@ -364,7 +437,6 @@ def make_graph(ev, iev):
             
             theta = 2 * math.atan(math.exp(-cp_eta))
             cp_pt = cp_energy * math.sin(theta)
-            
             node_id = ("cp", cp_idx)
             g.add_node(
                 node_id,
@@ -422,7 +494,7 @@ def make_graph(ev, iev):
         if cand_idx < len(ev["trkst_indcies"]):
             trackster_data = ev["trkst_indcies"][cand_idx]
             # Use SAME LOGIC as debugger
-            if hasattr(trackster_data, '__len__'):  # It's a list/array/STLVector
+            if hasattr(trackster_data, '__len__'):  
                 trackster_indices = trackster_data
             else:  # It's a single integer
                 trackster_indices = [trackster_data] if trackster_data != -1 else []
@@ -433,7 +505,7 @@ def make_graph(ev, iev):
         if cand_idx < len(ev["trks_indcies"]):
             track_data = ev["trks_indcies"][cand_idx]
             # Use SAME LOGIC as debugger
-            if hasattr(track_data, '__len__'):  # It's a list/array/STLVector
+            if hasattr(track_data, '__len__'):  
                 track_indices = track_data
             else:  # It's a single integer
                 track_indices = [track_data] if track_data != -1 else []
@@ -561,7 +633,7 @@ def prepare_normalized_table(g):
     
     return Xelem, ycand, ytarget
 
-def process_file(input_file, output_file, num_events=-1):
+def process_file(input_file, output_file, num_events=-1, start_event=0):
     """Process all events in a file and save to pickle."""
     print(f"Opening {input_file}")
     
@@ -587,20 +659,124 @@ def process_file(input_file, output_file, num_events=-1):
             trees[key] = None
     
     if trees['tkst'] is None:
-        print("ERROR: Missing trackster tree!")
-        return
+        print(f"ERROR: Missing trackster tree in {input_file}!")
+        return []
     
     # Get number of events
     total_events = trees['tkst'].num_entries
-    if num_events == -1 or num_events > total_events:
-        num_events = total_events
+    if num_events == -1:
+        num_events = total_events - start_event
+    else:
+        num_events = min(num_events, total_events - start_event)
     
-    print(f"Processing {num_events} events out of {total_events}")
+    print(f"  Processing events {start_event} to {start_event + num_events - 1} out of {total_events}")
     
     all_data = []
     
     # Process events
-    for iev in tqdm(range(num_events), desc="Processing events"):
+    for iev in tqdm(range(start_event, start_event + num_events), desc=f"Processing {os.path.basename(input_file)}"):
+        try:
+            # Read event
+            ev = read_event(trees, iev)
+            
+            # Create graph
+            g = make_graph(ev, iev)
+            
+            # Prepare normalized tables
+            Xelem, ycand, ytarget = prepare_normalized_table(g)
+            
+            # Collect data with original file info
+            event_data = {
+                "Xelem": Xelem,
+                "ycand": ycand,
+                "ytarget": ytarget,
+                "event_idx": iev,
+                "file_name": os.path.basename(input_file),
+                "global_event_idx": len(all_data)  # Global index across all files
+            }
+            
+            all_data.append(event_data)
+            
+        except Exception as e:
+            print(f"\nERROR processing event {iev} in {input_file}: {e}")
+            continue
+    
+    return all_data
+
+def process_files(input_list, output_file, num_events=-1, events_per_file=-1):
+    """Process multiple ROOT files from a list."""
+    all_data = []
+    total_events_processed = 0
+    
+    # Filter out comments and empty lines
+    input_list = [f.strip() for f in input_list if f.strip() and not f.startswith('#')]
+    
+    # Use tqdm for files with proper formatting
+    for input_file in tqdm(input_list, desc="Processing files", unit="file", 
+                          bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'):
+        # Determine how many events to process from this file
+        if events_per_file > 0:
+            file_num_events = events_per_file
+        elif num_events > 0:
+            remaining_events = num_events - total_events_processed
+            if remaining_events <= 0:
+                break
+            file_num_events = remaining_events
+        else:
+            file_num_events = -1  # Process all events
+        
+        file_data = process_file_no_progress(input_file, file_num_events, start_event=0)
+        
+        if file_data:
+            all_data.extend(file_data)
+            total_events_processed += len(file_data)
+            
+            # Update postfix with event count
+            #tqdm.write(f"  {os.path.basename(input_file)}: {len(file_data)} events")
+        
+        # Stop if we've reached the total event limit
+        if num_events > 0 and total_events_processed >= num_events:
+            tqdm.write(f"\nReached target of {num_events} events")
+            break
+    
+    return all_data
+
+def process_file_no_progress(input_file, num_events=-1, start_event=0):
+    """Process events in a file WITHOUT per-event progress bar."""
+    # Open ROOT file
+    tf = uproot.open(input_file)
+    
+    # Get trees
+    trees = {}
+    tree_names = {
+        'tkst': 'ticlDumper/ticlTracksterLinks',
+        'simtkst': 'ticlDumper/simtrackstersCP',
+        'cand': 'ticlDumper/candidates',
+        'simcan': 'ticlDumper/simTICLCandidate',
+        'track': 'ticlDumper/tracks',
+        'assoc': 'ticlDumper/associations'
+    }
+    
+    for key, tree_name in tree_names.items():
+        try:
+            trees[key] = tf[tree_name]
+        except:
+            trees[key] = None
+    
+    if trees['tkst'] is None:
+        return []
+    
+    # Get number of events
+    total_events = trees['tkst'].num_entries
+    if num_events == -1:
+        num_events = total_events - start_event
+    else:
+        num_events = min(num_events, total_events - start_event)
+    
+    all_data = []
+    
+    # Process events WITHOUT tqdm
+    for iev in range(start_event, start_event + num_events):
         try:
             # Read event
             ev = read_event(trees, iev)
@@ -616,39 +792,245 @@ def process_file(input_file, output_file, num_events=-1):
                 "Xelem": Xelem,
                 "ycand": ycand,
                 "ytarget": ytarget,
-                "event_idx": iev
+                "event_idx": iev,
+                "file_name": os.path.basename(input_file),
+                "global_event_idx": len(all_data)
             }
             
             all_data.append(event_data)
             
         except Exception as e:
-            print(f"\nERROR processing event {iev}: {e}")
+            # Silent error handling
             continue
     
-    # Save to pickle
-    print(f"\nSaving {len(all_data)} events to {output_file}")
-    with open(output_file, 'wb') as f:
-        pickle.dump(all_data, f)
-    
-    # Statistics
-    print(f"\nProcessing complete!")
-    print(f"  Input file: {input_file}")
-    print(f"  Events processed: {len(all_data)}/{num_events}")
-    print(f"  Output file: {output_file}")
-
+    return all_data
 def main():
     """Main function for batch processing."""
     parser = argparse.ArgumentParser(description='Process TICL graph data')
-    parser.add_argument('--input', type=str, required=True, help='Input ROOT file')
-    parser.add_argument('--output', type=str, default='ticl_graph_data.pkl', help='Output pickle file')
-    parser.add_argument('--num-events', type=int, default=-1, help='Number of events to process (-1 for all)')
+    parser.add_argument('--input', type=str, required=True, 
+                       help='Input ROOT file (.root) or text file with list of ROOT files (.txt)')
+    parser.add_argument('--output', type=str, default='ticl_graph_data.pkl', 
+                       help='Output pickle file')
+    parser.add_argument('--num-events', type=int, default=-1, 
+                       help='Total number of events to process across all files (-1 for all)')
+    parser.add_argument('--events-per-file', type=int, default=-1,
+                       help='Number of events to process per file (-1 for all)')
+    parser.add_argument('--max-files', type=int, default=-1,
+                       help='Maximum number of files to process (-1 for all)')
+    
     args = parser.parse_args()
     
     if not os.path.exists(args.input):
         print(f"ERROR: Input file {args.input} not found!")
         return
     
-    process_file(args.input, args.output, args.num_events)
+    # Determine if input is a single ROOT file or a list of files
+    input_files = []
+    
+    if args.input.endswith('.root'):
+        input_files = [args.input]
+        print(f"Processing single ROOT file: {args.input}")
+        
+    elif args.input.endswith('.txt'):
+        print(f"Reading file list from: {args.input}")
+        with open(args.input, 'r') as f:
+            input_files = [line.strip() for line in f]
+        
+        # Filter for ROOT files
+        input_files = [f for f in input_files if f.endswith('.root')]
+        
+        if args.max_files > 0:
+            input_files = input_files[:args.max_files]
+        
+        print(f"Found {len(input_files)} ROOT files to process")
+        if len(input_files) == 0:
+            print("ERROR: No ROOT files found in the text file!")
+            return
+            
+    else:
+        print(f"ERROR: Input file must be .root or .txt, got {args.input}")
+        return
+    
+    # Verify all files exist
+    missing_files = []
+    for f in input_files:
+        if not os.path.exists(f):
+            missing_files.append(f)
+    
+    if missing_files:
+        print(f"ERROR: {len(missing_files)} files not found:")
+        for f in missing_files[:5]:
+            print(f"  {f}")
+        if len(missing_files) > 5:
+            print(f"  ... and {len(missing_files)-5} more")
+        return
+    
+    print(f"\nStarting processing of {len(input_files)} files...")
+    
+    # Process files
+    all_data = process_files(input_files, args.output, args.num_events, args.events_per_file)
+    
+    # Save to pickle
+    if all_data:
+        print(f"\n{'='*60}")
+        print(f"Saving {len(all_data)} events from {len(input_files)} files to {args.output}")
+        
+        with open(args.output, 'wb') as f:
+            pickle.dump(all_data, f)
+        
+        print(f"\nProcessing complete!")
+        print(f"  Total events processed: {len(all_data)}")
+        print(f"  Files processed: {len(input_files)}")
+        print(f"  Output file: {args.output}")
+        
+        # Summary statistics
+        if len(all_data) > 0:
+            total_elements = sum(len(event['Xelem']) for event in all_data)
+            total_tracks = sum(np.sum(event['Xelem']['typ'] == 1) for event in all_data)
+            total_tracksters = sum(np.sum(event['Xelem']['typ'] == 4) for event in all_data)
+            total_cp = sum(np.sum(event['ytarget']['pid'] > 0) for event in all_data)
+            
+            print(f"\nSummary statistics:")
+            print(f"  Average elements per event: {total_elements/len(all_data):.1f}")
+            print(f"  Average tracks per event: {total_tracks/len(all_data):.1f}")
+            print(f"  Average tracksters per event: {total_tracksters/len(all_data):.1f}")
+            print(f"  Average CaloParticles per event: {total_cp/len(all_data):.1f}")
+    else:
+        print("ERROR: No events were processed!")
 
 if __name__ == "__main__":
     main()
+'''
+#For debugging only
+#Process multiple ROOT files from a list.
+def process_files(input_list, output_file, num_events=-1, events_per_file=-1):
+    all_data = []
+    total_events_processed = 0
+    
+    for i, input_file in enumerate(input_list):
+        input_file = input_file.strip()
+        if not input_file or input_file.startswith('#'):
+            continue
+            
+        print(f"\nProcessing file {i+1}/{len(input_list)}: {input_file}")
+        
+        # Determine how many events to process from this file
+        if events_per_file > 0:
+            file_num_events = events_per_file
+        elif num_events > 0:
+            remaining_events = num_events - total_events_processed
+            if remaining_events <= 0:
+                break
+            file_num_events = remaining_events
+        else:
+            file_num_events = -1  # Process all events
+        
+        file_data = process_file(input_file, output_file, file_num_events, start_event=0)
+        
+        if file_data:
+            all_data.extend(file_data)
+            total_events_processed += len(file_data)
+            print(f"  Added {len(file_data)} events, total so far: {total_events_processed}")
+        
+        # Stop if we've reached the total event limit
+        if num_events > 0 and total_events_processed >= num_events:
+            print(f"Reached target of {num_events} events")
+            break
+    
+    return all_data
+
+def main():
+    """Main function for batch processing."""
+    parser = argparse.ArgumentParser(description='Process TICL graph data')
+    parser.add_argument('--input', type=str, required=True, 
+                       help='Input ROOT file (.root) or text file with list of ROOT files (.txt)')
+    parser.add_argument('--output', type=str, default='ticl_graph_data.pkl', 
+                       help='Output pickle file')
+    parser.add_argument('--num-events', type=int, default=-1, 
+                       help='Total number of events to process across all files (-1 for all)')
+    parser.add_argument('--events-per-file', type=int, default=-1,
+                       help='Number of events to process per file (-1 for all)')
+    parser.add_argument('--max-files', type=int, default=-1,
+                       help='Maximum number of files to process (-1 for all)')
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.input):
+        print(f"ERROR: Input file {args.input} not found!")
+        return
+    
+    # Determine if input is a single ROOT file or a list of files
+    input_files = []
+    
+    if args.input.endswith('.root'):
+        # Single ROOT file
+        input_files = [args.input]
+        print(f"Processing single ROOT file: {args.input}")
+        
+    elif args.input.endswith('.txt'):
+        # Text file containing list of ROOT files
+        print(f"Reading file list from: {args.input}")
+        with open(args.input, 'r') as f:
+            input_files = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+        # Filter for ROOT files
+        input_files = [f for f in input_files if f.endswith('.root')]
+        
+        if args.max_files > 0:
+            input_files = input_files[:args.max_files]
+        
+        print(f"Found {len(input_files)} ROOT files to process")
+        if len(input_files) == 0:
+            print("ERROR: No ROOT files found in the text file!")
+            return
+            
+    else:
+        print(f"ERROR: Input file must be .root or .txt, got {args.input}")
+        return
+    
+    # Verify all files exist
+    missing_files = []
+    for f in input_files:
+        if not os.path.exists(f):
+            missing_files.append(f)
+    
+    if missing_files:
+        print(f"ERROR: {len(missing_files)} files not found:")
+        for f in missing_files[:5]:  # Show first 5 missing files
+            print(f"  {f}")
+        if len(missing_files) > 5:
+            print(f"  ... and {len(missing_files)-5} more")
+        return
+    
+    # Process files
+    all_data = process_files(input_files, args.output, args.num_events, args.events_per_file)
+    
+    # Save to pickle
+    if all_data:
+        print(f"\nSaving {len(all_data)} events from {len(input_files)} files to {args.output}")
+        with open(args.output, 'wb') as f:
+            pickle.dump(all_data, f)
+        
+        print(f"\nProcessing complete!")
+        print(f"  Total events processed: {len(all_data)}")
+        print(f"  Files processed: {len(input_files)}")
+        print(f"  Output file: {args.output}")
+        
+        # Summary statistics
+        total_elements = sum(len(event['Xelem']) for event in all_data)
+        total_tracks = sum(np.sum(event['Xelem']['typ'] == 1) for event in all_data)
+        total_tracksters = sum(np.sum(event['Xelem']['typ'] == 4) for event in all_data)
+        total_cp = sum(np.sum(event['ytarget']['pid'] > 0) for event in all_data)
+        
+        print(f"\nSummary statistics:")
+        print(f"  Average elements per event: {total_elements/len(all_data):.1f}")
+        print(f"  Average tracks per event: {total_tracks/len(all_data):.1f}")
+        print(f"  Average tracksters per event: {total_tracksters/len(all_data):.1f}")
+        print(f"  Average CaloParticles per event: {total_cp/len(all_data):.1f}")
+    else:
+        print("ERROR: No events were processed!")
+
+if __name__ == "__main__":
+    main()
+
+'''
