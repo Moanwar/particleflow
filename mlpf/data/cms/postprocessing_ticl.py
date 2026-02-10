@@ -111,7 +111,7 @@ def read_event(trees, iev):
     ev["simcan_simTracksterCPIndex"] = simcan_arrays["simTICLCandidate_simTracksterCPIndex"][0]
 
     track_arrays = trees['track'].arrays(
-        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_charge"],
+        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_charge","track_id"],
         entry_start=iev, entry_stop=iev+1, library="np"
     )
     ev["track_pt"] = track_arrays["track_pt"][0]
@@ -119,7 +119,8 @@ def read_event(trees, iev):
     ev["track_eta"] = track_arrays["track_eta"][0]
     ev["track_phi"] = track_arrays["track_hgcal_phi"][0]
     ev["track_charge"] = track_arrays["track_charge"][0]
-    
+    ev["track_id"] = track_arrays["track_id"][0]
+
     assoc_arrays = trees['assoc'].arrays(
         ["ticlTracksterLinks_recoToSim_CP_score", "ticlTracksterLinks_simToReco_CP_score",
          "ticlTracksterLinks_simToReco_CP_sharedE", "ticlTracksterLinks_recoToSim_CP",
@@ -191,26 +192,33 @@ def collect_cp_element_connections(ev):
         cp_pid = ev["simcan_pdgid"][cp_idx]
         cp_eta = ev["simcan_eta"][cp_idx]
 
-        for track_idx in track_indices:
-            if track_idx < 0 or track_idx >= n_tracks:
-                continue
-            
-            track_p = ev["track_p"][track_idx]
-            connections.append({
-                'cp_idx': cp_idx,
-                'cp_pid': cp_pid,
-                'cp_energy': cp_energy,
-                'cp_eta': cp_eta,
-                'element_idx': n_ts + track_idx,
-                'element_type': 1,
-                'shared_energy': track_p,
-                'element_energy': track_p,
-                'elem_weight': 1.0,
-                'cp_fraction': track_p / cp_energy if cp_energy > 0 else 0,
-                'reco_score': 0.0,
-                'sim_score': 0.0,
-                'is_charged': is_charged_particle(cp_pid)
-            })
+        for track_id in track_indices:  # track ID, not index
+            # Find which array position has this track ID
+            track_idx = None
+            for i in range(n_tracks):
+                if ev["track_id"][i] == track_id:
+                    track_idx = i
+                    break
+        
+                if track_idx is None or track_idx < 0 or track_idx >= n_tracks:
+                    continue
+        
+                track_p = ev["track_p"][track_idx]
+                connections.append({
+                    'cp_idx': cp_idx,
+                    'cp_pid': cp_pid,
+                    'cp_energy': cp_energy,
+                    'cp_eta': cp_eta,
+                    'element_idx': n_ts + track_idx,
+                    'element_type': 1,
+                    'shared_energy': track_p,
+                    'element_energy': track_p,
+                    'elem_weight': 1.0,
+                    'cp_fraction': track_p / cp_energy if cp_energy > 0 else 0,
+                    'reco_score': 0.0,
+                    'sim_score': 0.0,
+                    'is_charged': is_charged_particle(cp_pid)
+                })
     
     return connections
 def split_caloparticles_tracksters(connections, ev):
