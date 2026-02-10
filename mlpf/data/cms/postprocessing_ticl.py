@@ -156,7 +156,7 @@ def collect_cp_element_connections(ev):
                 
                 reco_score = reco_to_sim_scores[trackster_idx][0] if trackster_idx < len(reco_to_sim_scores) and len(reco_to_sim_scores[trackster_idx]) > 0 else 1.0
                 sim_score = sim_to_reco_scores[sim_idx][idx] if sim_idx < len(sim_to_reco_scores) and idx < len(sim_to_reco_scores[sim_idx]) else 1.0
-                if reco_score < 0.6 or sim_score < 0.9:
+                if reco_score > 0.6 or sim_score > 0.9:
                     continue
                 cp_energy = ev["simtkst_energy"][sim_idx]
                 element_energy = ev["ts_energy"][trackster_idx]
