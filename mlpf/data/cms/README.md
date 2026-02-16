@@ -116,5 +116,8 @@ ycand    # [n_elements x n_particle_features] - Baseline PF labels
 
 ## 3. Run the Preprocessing
 ```bash
+-To run on one root file :
 python3 postprocessing_ticl.py --input histo.root --output ticl_graph.pkl --num-events 100
+-To run on list of root files
+python3 postprocessing_ticl.py --input 211_0pu.txt --output ticl_graph.pkl 
 ```  
