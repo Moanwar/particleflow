@@ -10,6 +10,7 @@ from collections import defaultdict
 import fastjet
 import math
 import traceback
+import awkward
 
 #python3 postprocessing_ticl.py --input 211_0pu.txt --output ticl_graph_data_pion_0pu.pkl
 
@@ -68,7 +69,7 @@ def compute_truth_jets(g, pt_min=3.0):
             e = g.nodes[node]["energy"]
             
             # Create PseudoJet from px, py, pz, e
-            pj = fastjet.PseudoJet(px, py, pz, e)
+            pj = fastjet.PseudoJet(float(px), float(py), float(pz), float(e))
             pseudojets.append(pj)
         
         # Define jet algorithm (anti-kT, R=0.4)
@@ -93,6 +94,133 @@ def compute_truth_jets(g, pt_min=3.0):
         print(f"Warning: Jet clustering failed: {e}")
         return np.array([])
     
+#Compute jets from target particles
+def compute_target_jets(ytarget, pt_min=3.0):
+    """Compute jets from target particles."""
+    valid = ytarget["pid"] != 0
+    if not np.any(valid):
+        return np.array([])
+    
+    try:
+        import fastjet
+        
+        # Create list of PseudoJets directly from numpy arrays
+        pseudojets = []
+        valid_indices = np.where(valid)[0]
+        
+        for idx in valid_indices:
+            pt = ytarget["pt"][idx]
+            eta = ytarget["eta"][idx]
+            phi = np.arctan2(ytarget["sin_phi"][idx], ytarget["cos_phi"][idx])
+            energy = ytarget["energy"][idx]
+            
+            # Calculate px, py, pz from pt, eta, phi
+            px = pt * math.cos(phi)
+            py = pt * math.sin(phi)
+            pz = pt * math.sinh(eta) if abs(eta) < 10 else 0
+            
+            # Create PseudoJet directly with px, py, pz, e
+            pj = fastjet.PseudoJet(float(px), float(py), float(pz), float(energy))
+            pseudojets.append(pj)
+        
+        # Define jet algorithm (anti-kT, R=0.4)
+        jetdef = fastjet.JetDefinition(fastjet.antikt_algorithm, 0.4)
+        
+        # Cluster jets
+        cluster = fastjet.ClusterSequence(pseudojets, jetdef)
+        jets = cluster.inclusive_jets(ptmin=pt_min)
+        
+        # Convert to numpy array
+        if len(jets) > 0:
+            targetjets = np.array([[j.pt(), j.eta(), j.phi(), j.e()] for j in jets])
+        else:
+            targetjets = np.array([])
+        
+        return targetjets
+        
+    except Exception as e:
+        print(f"Warning: Target jet clustering failed: {e}")
+        return np.array([])
+
+#Compute truth MET from stable gen particles
+def compute_genmet(g):
+    gen_nodes = [n for n in g.nodes if n[0] == "gen"]
+    
+    sum_px = 0.0
+    sum_py = 0.0
+    
+    for node in gen_nodes:
+        status = g.nodes[node].get("status", 0)
+        pid = g.nodes[node].get("pid", 0)
+        
+        # Only stable, non-neutrino particles contribute to MET
+        if status == 1 and pid not in [12, 14, 16]:
+            px = g.nodes[node]["pt"] * math.cos(g.nodes[node]["phi"])
+            py = g.nodes[node]["pt"] * math.sin(g.nodes[node]["phi"])
+            sum_px += px
+            sum_py += py
+    
+    met_pt = np.sqrt(sum_px**2 + sum_py**2)
+    met_phi = np.arctan2(sum_py, sum_px)
+    
+    return np.array([met_pt, met_phi])
+#Assign jet indices to target particles
+def assign_jet_indices(ytarget, targetjets, pt_min=3.0):
+    """Assign jet indices to target particles."""
+    ytarget_copy = ytarget.copy()
+    ytarget_copy["jet_idx"] = -1
+    
+    valid = ytarget["pid"] != 0
+    if not np.any(valid) or len(targetjets) == 0:
+        return ytarget_copy
+    
+    try:
+        import fastjet
+        
+        # Create list of PseudoJets
+        pseudojets = []
+        valid_indices = np.where(valid)[0]
+        
+        for idx in valid_indices:
+            pt = ytarget["pt"][idx]
+            eta = ytarget["eta"][idx]
+            phi = np.arctan2(ytarget["sin_phi"][idx], ytarget["cos_phi"][idx])
+            energy = ytarget["energy"][idx]
+            
+            px = pt * math.cos(phi)
+            py = pt * math.sin(phi)
+            pz = pt * math.sinh(eta) if abs(eta) < 10 else 0
+            
+            pj = fastjet.PseudoJet(float(px), float(py), float(pz), float(energy))
+            pseudojets.append(pj)
+        
+        # Cluster jets with constituent indices
+        jetdef = fastjet.JetDefinition(fastjet.antikt_algorithm, 0.4)
+        cluster = fastjet.ClusterSequence(pseudojets, jetdef)
+        jets = cluster.inclusive_jets(ptmin=pt_min)
+        
+        # Get constituent indices - handle different return types
+        if hasattr(cluster, 'constituent_index'):
+            indices = cluster.constituent_index(ptmin=pt_min)
+        else:
+            # Alternative method to get constituents
+            indices = []
+            for jet in jets:
+                constituents = jet.constituents()
+                jet_indices = [pseudojets.index(c) for c in constituents if c in pseudojets]
+                indices.append(jet_indices)
+        
+        # Map back to original indices
+        for jet_idx, const_indices in enumerate(indices):
+            for const_idx in const_indices:
+                if const_idx < len(valid_indices):
+                    orig_idx = valid_indices[const_idx]
+                    ytarget_copy["jet_idx"][orig_idx] = jet_idx
+                
+    except Exception as e:
+        print(f"Warning: Jet index assignment failed: {e}")
+    
+    return ytarget_copy
 
 def get_charge(pid):
     abs_pid = abs(pid)
@@ -1196,8 +1324,11 @@ def process_file_no_progress(input_file, num_events=-1, start_event=0):
             
             # Prepare normalized tables
             Xelem, ycand, ytarget = prepare_normalized_table(g)
-            pt_min = 1
+            pt_min = 3
             truth_jets = compute_truth_jets(g, pt_min=pt_min)
+            targetjets = compute_target_jets(ytarget, pt_min=pt_min)
+            genmet = compute_genmet(g)
+            ytarget_with_jet_idx = assign_jet_indices(ytarget, targetjets, pt_min=pt_min)
 
             stable_gen = []
             for node in g.nodes:
@@ -1216,9 +1347,11 @@ def process_file_no_progress(input_file, num_events=-1, start_event=0):
             event_data = {
                 "Xelem": Xelem,
                 "ycand": ycand,
-                "ytarget": ytarget,
+                "ytarget": ytarget_with_jet_idx,
                 "genjet": truth_jets,
-                "stable_gen": stable_gen_array,
+                "targetjet": targetjets,
+                "genmet": genmet,
+                "pythia": stable_gen_array,
                 "event_idx": iev,
                 "file_name": os.path.basename(input_file),
                 "global_event_idx": len(all_data)
