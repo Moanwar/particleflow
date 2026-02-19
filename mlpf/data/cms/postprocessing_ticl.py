@@ -93,17 +93,15 @@ def compute_truth_jets(g, pt_min=3.0):
     except Exception as e:
         print(f"Warning: Jet clustering failed: {e}")
         return np.array([])
+
     
 #Compute jets from target particles
 def compute_target_jets(ytarget, pt_min=3.0):
-    """Compute jets from target particles."""
     valid = ytarget["pid"] != 0
     if not np.any(valid):
         return np.array([])
     
     try:
-        import fastjet
-        
         # Create list of PseudoJets directly from numpy arrays
         pseudojets = []
         valid_indices = np.where(valid)[0]
@@ -134,13 +132,13 @@ def compute_target_jets(ytarget, pt_min=3.0):
         if len(jets) > 0:
             targetjets = np.array([[j.pt(), j.eta(), j.phi(), j.e()] for j in jets])
         else:
-            targetjets = np.array([])
+            targetjets = np.zeros((0, 4), dtype=np.float32) 
         
         return targetjets
         
     except Exception as e:
         print(f"Warning: Target jet clustering failed: {e}")
-        return np.array([])
+        return np.zeros((0, 4), dtype=np.float32)
 
 #Compute truth MET from stable gen particles
 def compute_genmet(g):
@@ -447,7 +445,7 @@ def collect_em_connections(ev):
                     'is_charged': is_charged_particle(cp_pid)
                 })
     return connections
-#Collect connections from tracks (type 1)
+
 def collect_track_connections(ev):
     connections = []
     n_ts = len(ev["ts_energy"])
@@ -460,9 +458,11 @@ def collect_track_connections(ev):
         if len(track_indices) == 0:
             continue
             
-        cp_energy = ev["simcan_energy"][cp_idx]
         cp_pid = ev["simcan_pdgid"][cp_idx]
+        cp_energy = ev["simcan_energy"][cp_idx]
         cp_eta = ev["simcan_eta"][cp_idx]
+        
+        is_electron = (abs(cp_pid) == 11)
         
         for track_id in track_indices:  
             track_idx = track_id_to_idx.get(track_id)
@@ -475,14 +475,16 @@ def collect_track_connections(ev):
                 'cp_pid': cp_pid,
                 'cp_energy': cp_energy,
                 'cp_eta': cp_eta,
-                'element_idx': n_ts + track_idx,  # Offset for tracks after tracksters
-                'element_type': 1,  # Track
+                'element_idx': n_ts + track_idx,
+                'element_type': 1,
                 'shared_energy': track_p,
                 'element_energy': track_p,
-                'is_charged': is_charged_particle(cp_pid)
+                'is_charged': is_charged_particle(cp_pid),
+                'is_electron_track': is_electron 
             })
     
     return connections
+
 #Collect connections for muons (type 5) from candidates
 def collect_muon_connections(ev):
     connections = []
@@ -589,6 +591,7 @@ def split_caloparticles(connections, ev):
 
         # Separate by type
         tracks = [e for e in valid_elements if e['element_type'] == 1]
+        electron_tracks = [e for e in tracks if e.get('is_electron_track', False)]
         had_tracksters = [e for e in valid_elements if e['element_type'] == 4]
         em_tracksters = [e for e in valid_elements if e['element_type'] in [2, 3]]
         muons = [e for e in valid_elements if e['element_type'] == 5]
@@ -597,24 +600,25 @@ def split_caloparticles(connections, ev):
     
             # ELECTRONS
             if abs(cp_pid) == 11:
-                relevant = [e for e in (tracks + em_tracksters) if e['element_type'] in [1, 2]]
-                if relevant:
-                    total_shared = sum(e['shared_energy'] for e in relevant)
-                    for elem in relevant:
-                        weight = elem['shared_energy'] / total_shared if total_shared > 0 else 1.0/len(relevant)
+                relevant_tracks = electron_tracks if electron_tracks else tracks
+                all_relevant = relevant_tracks + em_tracksters
+
+                if all_relevant:
+                    for elem in all_relevant:
                         split_cps.append({
                             'original_idx': cp_idx,
                             'new_idx': new_cp_idx,
                             'element_idx': elem['element_idx'],
-                            'element_type': elem['element_type'],
+                            'element_type': 6 if elem in electron_tracks else elem['element_type'],
                             'cp_energy': cp_energy,
                             'cp_pid': cp_pid,
-                            'weight': weight,
+                            'weight': 1.0,
                             'is_winner': True,
                             'cp_eta': cp_eta,
                             'ispu': cp_ispu,
                         })
                     new_cp_idx += 1
+
     
             # PHOTONS
             elif abs(cp_pid) == 22:
@@ -703,7 +707,7 @@ def split_caloparticles(connections, ev):
                     'element_type': 1,
                     'cp_energy': split_energy,
                     'cp_pid': cp_pid,
-                    'weight': split_fraction,
+                    'weight': 1, #split_fraction,
                     'is_winner': True,
                     'cp_eta': cp_eta,
                     'ispu': cp_ispu,
@@ -742,23 +746,32 @@ def split_caloparticles(connections, ev):
                     'element_type': elem['element_type'],
                     'cp_energy': split_energy,
                     'cp_pid': cp_pid,
-                    'weight': split_fraction,
+                    'weight': 1, #split_fraction,
                     'is_winner': True,
                     'cp_eta': cp_eta,
                     'ispu': cp_ispu,
                 })
             new_cp_idx += 1
-
     return split_cps
-
+#create a directed graph for one event
 def make_graph(ev, iev):
-    """Create a directed graph for one event."""
     g = nx.DiGraph()
     
     n_ts = len(ev["ts_energy"])           # Hadronic tracksters
     n_tracks = len(ev["track_pt"])         # Tracks
     n_ts_eg = len(ev["tsEG_energy"])       # EM tracksters
-    
+    track_id_to_iselectron = {}
+    track_id_to_idx = {tid: i for i, tid in enumerate(ev["track_id"])}
+    for cp_idx in range(len(ev["simcan_trkId"])):
+        cp_pid = ev["simcan_pdgid"][cp_idx]
+        is_electron = (abs(cp_pid) == 11)
+        
+        if is_electron:
+            track_indices = ev["simcan_trkId"][cp_idx]
+            for track_id in track_indices:
+                if track_id in track_id_to_idx:
+                    track_id_to_iselectron[track_id] = True
+                    
     # Add hadronic tracksters (type 4)
     for its in range(n_ts):
         energy = ev["ts_energy"][its]
@@ -788,11 +801,13 @@ def make_graph(ev, iev):
     # Add tracks (type 1)
     for itrk in range(n_tracks):
         node_id = ("elem", n_ts + itrk)
+        track_id = ev["track_id"][itrk]
         pz = ev["track_pt"][itrk] * math.sinh(ev["track_eta"][itrk]) if abs(ev["track_eta"][itrk]) < 10 else 0
-        
+        is_electron_track = track_id in track_id_to_iselectron
+        elem_type = 6 if is_electron_track else 1
         g.add_node(
             node_id,
-            typ=1,
+            typ=elem_type,
             pt=float(ev["track_pt"][itrk]),
             energy=float(ev["track_p"][itrk]),
             eta=float(ev["track_eta"][itrk]),
@@ -821,7 +836,7 @@ def make_graph(ev, iev):
         # For now, we add a temporary type
         g.add_node(
             node_id,
-            typ=-1,  # Will be updated when adding edges
+            typ=-1,  # will be updated when adding edges
             pt=float(pt),
             energy=float(energy),
             eta=float(eta),
@@ -831,7 +846,7 @@ def make_graph(ev, iev):
             py=float(py),
             pz=float(pz),
         )
-    # Add muon elements (type 5) from candidates
+    #Adding muon elements (type 5) from candidates
     muon_offset = n_ts + n_tracks + n_ts_eg
     for ipf in range(len(ev["tcan_pt"])):
         if abs(ev["candidate_pdgId"][ipf]) == 13:
@@ -861,7 +876,7 @@ def make_graph(ev, iev):
     split_cps = split_caloparticles(all_connections, ev)
 
 
-    # Add split CP nodes and edges
+    # split CP nodes and edges
     # First, group split_cps by original_idx to calculate totals
     cp_totals = defaultdict(lambda: {'track': 0.0, 'cluster': 0.0})
 
@@ -1044,19 +1059,79 @@ def make_graph(ev, iev):
                     g.nodes[mother_node]["num_daughters"] += 1
 
     return g
-#Prepare normalized tables for one event
+def find_representative_elements(g, elem_to_cp, cp_to_elem, elem_type, pid_type=0):
+    #get all elements of this type, sorted by pt descending
+    elems = [(g.nodes[e]["pt"], e) for e in g.nodes if e[0] == "elem" and g.nodes[e]["typ"] == elem_type]
+    elems_sorted = sorted(elems, key=lambda x: x[0], reverse=True)
+    
+    for _, elem in elems_sorted:
+        #get all CPs pointing to this element
+        cps = list(g.predecessors(elem))
+        
+        #filter by PID if requested
+        if pid_type != 0:
+            cps = [cp for cp in cps if abs(g.nodes[cp]["pid"]) == pid_type]
+        
+        #only consider CP that have not been assigned yet
+        cps_weight = [(g.edges[(cp, elem)]["weight"], cp) for cp in cps 
+                     if cp not in cp_to_elem and cp[0] == "cp"]
+        cps_weight_sorted = sorted(cps_weight, key=lambda x: x[0], reverse=True)
+        
+        if len(cps_weight_sorted) > 0:
+            #take the CP with highest weight to this element
+            cp = cps_weight_sorted[0][1]
+            elem_to_cp[elem] = cp
+            cp_to_elem[cp] = elem
+            
+#prepare normalized tables for one event
 def prepare_normalized_table(g):
     all_elements = [n for n in g.nodes if n[0] == "elem"]
     
-    # Sort elements by type (tracks first, then others)
     all_elements.sort(key=lambda x: (
-        0 if g.nodes[x]["typ"] == 1 else 
-        1 if g.nodes[x]["typ"] == 5 else  # muons next
-        2 if g.nodes[x]["typ"] in [2, 3] else  # EM tracksters
-        3,  # hadronic tracksters last
+        0 if g.nodes[x]["typ"] == 6 else  
+        1 if g.nodes[x]["typ"] == 1 else  
+        2 if g.nodes[x]["typ"] == 5 else  
+        3 if g.nodes[x]["typ"] in [2, 3] else  
+        4,  
         x[1]
     ))
     
+    elem_to_primary_cp = {}  
+    cp_to_primary_elem = {}  
+    
+
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 6)  # Electron tracks
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 1)  # Regular tracks
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 2)  # EM tracksters (electrons)
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 3)  # EM tracksters (photons)
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 4)  # Hadronic tracksters
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 5)  # Muons
+    
+    elem_electron_tracks = [n for n in g.nodes if n[0] == "elem" and g.nodes[n]["typ"] == 6]
+    for track in elem_electron_tracks:
+        to_remove = []
+        for pred in g.predecessors(track):
+            if abs(g.nodes[pred]["pid"]) != 11:
+                to_remove.append((pred, track))
+        for edge in to_remove:
+            g.remove_edge(edge[0], edge[1])
+    
+    #build full mapping of elements to ALL their CPs (for merging)
+    elem_to_all_cps = defaultdict(list)
+    for elem in all_elements:
+        for pred in g.predecessors(elem):
+            if pred[0] == "cp":
+                elem_to_all_cps[elem].append(pred)
+    
+    #map elements to candidates
+    elem_to_cand = {}
+    for elem in all_elements:
+        for succ in g.successors(elem):
+            if succ[0] == "pfcand":
+                elem_to_cand[elem] = succ
+                break
+    
+    #create arrays
     Xelem = np.recarray(
         (len(all_elements),),
         dtype=[(name, np.float32) for name in elem_branches],
@@ -1075,33 +1150,18 @@ def prepare_normalized_table(g):
     )
     ycand.fill(0.0)
     
-    # Map elements to CPs (multiple CPs possible)
-    elem_to_cps = defaultdict(list)
-    for elem in all_elements:
-        for pred in g.predecessors(elem):
-            if pred[0] == "cp":
-                elem_to_cps[elem].append(pred)
-    
-    # Map elements to candidates
-    elem_to_cand = {}
-    for elem in all_elements:
-        for succ in g.successors(elem):
-            if succ[0] == "pfcand":
-                elem_to_cand[elem] = succ
-                break
-    
-    # Fill Xelem
+    #fill Xelem
     for ielem, elem in enumerate(all_elements):
         for branch in elem_branches:
             if branch in g.nodes[elem]:
                 Xelem[branch][ielem] = g.nodes[elem][branch]
     
-    # Fill ytarget (merge multiple CPs if needed)
+    #fill ytarget (merge multiple CPs if needed)
     for ielem, elem in enumerate(all_elements):
-        cps = elem_to_cps.get(elem, [])
+        cps = elem_to_all_cps.get(elem, [])
         
         if cps:
-            # Multiple CPs - merge them with energy weighting
+            #multiple CP, merge them with energy weighting
             total_energy = 0
             weighted_sum = {
                 'pid': 0, 'charge': 0, 'pt': 0, 'eta': 0, 
@@ -1109,6 +1169,16 @@ def prepare_normalized_table(g):
                 'ispu': 0, 'cp_to_track': 0, 'cp_to_cluster': 0
             }
             
+            #for electron, specific elements (type 6), prefer electron CPs
+            if Xelem["typ"][ielem] == 6:
+                electron_cps = [cp for cp in cps if abs(g.nodes[cp]["pid"]) == 11]
+                if electron_cps:
+                    #use only electron CP for electron tracks
+                    cps = electron_cps
+
+            highest_energy_cp = max(cps, key=lambda cp: g.nodes[cp]["energy"])
+            pid = g.nodes[highest_energy_cp]["pid"]
+
             for cp in cps:
                 edge_data = g.edges[(cp, elem)]
                 weight = edge_data.get('weight', 1.0)
@@ -1123,13 +1193,7 @@ def prepare_normalized_table(g):
                 for key in weighted_sum.keys():
                     weighted_sum[key] /= total_energy
                 
-                # Get majority pid
-                pid_counts = defaultdict(int)
-                for cp in cps:
-                    pid_counts[g.nodes[cp]["pid"]] += 1
-                majority_pid = max(pid_counts.items(), key=lambda x: x[1])[0]
-                
-                ytarget["pid"][ielem] = majority_pid
+                ytarget["pid"][ielem] = pid
                 ytarget["charge"][ielem] = weighted_sum['charge']
                 ytarget["pt"][ielem] = weighted_sum['pt']
                 ytarget["eta"][ielem] = weighted_sum['eta']
@@ -1140,7 +1204,7 @@ def prepare_normalized_table(g):
                 ytarget["cp_to_track"][ielem] = weighted_sum['cp_to_track']
                 ytarget["cp_to_cluster"][ielem] = weighted_sum['cp_to_cluster']
         else:
-            # No CP - pileup/noise
+            #no CP,  pileup/noise
             ytarget["pid"][ielem] = 0
             ytarget["charge"][ielem] = g.nodes[elem].get("charge", 0.0)
             ytarget["pt"][ielem] = 0.0
@@ -1156,7 +1220,7 @@ def prepare_normalized_table(g):
         ytarget["simulatorStatus"][ielem] = 1 if cps else 0
         ytarget["jet_idx"][ielem] = -1
     
-    # Fill ycand
+    #fill ycand
     for ielem, elem in enumerate(all_elements):
         cand = elem_to_cand.get(elem)
         if cand is not None:
@@ -1278,7 +1342,6 @@ def process_files(input_list, output_file, num_events=-1, events_per_file=-1):
     return all_data
 
 def process_file_no_progress(input_file, num_events=-1, start_event=0):
-    """Process events in a file WITHOUT per-event progress bar."""
     # Open ROOT file
     tf = uproot.open(input_file)
     
