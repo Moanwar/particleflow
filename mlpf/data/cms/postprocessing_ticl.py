@@ -39,7 +39,7 @@ particle_feature_order = [
 ]
 
 # Pre-build lookup sets/dicts once at module level
-_NEUTRAL_PIDS   = frozenset([130, 22, 1, 2, 310])
+_NEUTRAL_PIDS   = frozenset([130, 22, 310])
 _CHARGED_PIDS   = frozenset([11, 13, 211, 321])
 _NEUTRINO_PIDS  = frozenset([12, 14, 16])
 
@@ -75,10 +75,12 @@ def compute_truth_jets(g, pt_min=3.0):
     gen_nodes = [n for n in g.nodes if n[0] == "gen"]
     if not gen_nodes:
         return np.array([])
-
+    
     stable = [n for n in gen_nodes
               if g.nodes[n].get("status", 0) == 1
+              and g.nodes[n].get("num_daughters", 0) == 0
               and g.nodes[n].get("pid", 0) not in _NEUTRINO_PIDS]
+
     if not stable:
         return np.array([])
 
@@ -122,12 +124,55 @@ def compute_target_jets(ytarget, pt_min=3.0):
 def compute_genmet(g):
     gen_nodes = [n for n in g.nodes if n[0] == "gen"]
     attrs = g.nodes
+    print(f"Total gen nodes: {len(gen_nodes)}")
+    all_neutrinos = [n for n in gen_nodes if attrs[n].get("pid", 0) in _NEUTRINO_PIDS]
+    print(f"All neutrinos (any status):")
+    for n in all_neutrinos:
+        print(f"  {n}: pid={attrs[n].get('pid')}, status={attrs[n].get('status')}, "
+              f"pt={attrs[n].get('pt'):.2f}, phi={attrs[n].get('phi'):.3f}, "
+              f"num_daughters={attrs[n].get('num_daughters',0)}")
+    status1 = [n for n in all_neutrinos if attrs[n].get("status", 0) == 1]
+    nodaughters = [n for n in all_neutrinos if attrs[n].get("num_daughters", 0) == 0]
+    print(f"status==1: {len(status1)}, num_daughters==0: {len(nodaughters)}")
+    if nodaughters:
+        pts  = np.array([attrs[n]["pt"]  for n in nodaughters])
+        phis = np.array([attrs[n]["phi"] for n in nodaughters])
+        print(f"pts: {pts}")
+        print(f"phis: {phis}")
+        sum_px = np.sum(pts * np.cos(phis))
+        sum_py = np.sum(pts * np.sin(phis))
+        print(f"sum_px={sum_px:.3f}, sum_py={sum_py:.3f}")
+        met = math.hypot(sum_px, sum_py)
+        print(f"MET = {met:.3f}")
+        
+    neutrinos = [n for n in gen_nodes
+                 if attrs[n].get("status", 0) == 1
+                 and attrs[n].get("pid", 0) in _NEUTRINO_PIDS
+                 and attrs[n].get("num_daughters", 0) == 0]
+    if not neutrinos:
+        return np.array([0.0, 0.0])
+
+    pts  = np.array([attrs[n]["pt"]  for n in neutrinos])
+    phis = np.array([attrs[n]["phi"] for n in neutrinos])
+    sum_px = np.sum(pts * np.cos(phis))
+    sum_py = np.sum(pts * np.sin(phis))
+    return np.array([math.hypot(sum_px, sum_py), math.atan2(sum_py, sum_px)])
+
+def compute_genmetv(g):
+    """
+    Compute generator-level MET as the vector sum of neutrino pT.
+    """
+    gen_nodes = [n for n in g.nodes if n[0] == "gen"]
+    attrs = g.nodes
+    neutrino_nodes = [n for n in gen_nodes if attrs[n].get("pid", 0) in _NEUTRINO_PIDS]
+    if neutrino_nodes:
+        print(f"Neutrino statuses: {[(n, attrs[n].get('status',0), attrs[n].get('pt',0)) for n in neutrino_nodes[:6]]}")
 
     # Select stable neutrinos these carry away the missing energy
     neutrinos = [n for n in gen_nodes
                  if attrs[n].get("status", 0) == 1
                  and attrs[n].get("pid", 0) in _NEUTRINO_PIDS]
-
+    
     if not neutrinos:
         return np.array([0.0, 0.0])
 
@@ -211,13 +256,15 @@ def read_event(trees, iev):
     a = trees['simcan'].arrays(
         ["simTICLCandidate_pdgId", "simTICLCandidate_pt", "simTICLCandidate_eta",
          "simTICLCandidate_phi", "simTICLCandidate_regressed_energy",
+         "simTICLCandidate_raw_energy",
          "simTICLCandidate_tracks_in_candidate", "simTICLCandidate_simTracksterCPIndex",
          "simTICLCandidate_ispu"], **sl)
     ev["simcan_pdgid"]               = a["simTICLCandidate_pdgId"][0]
     ev["simcan_pt"]                  = a["simTICLCandidate_pt"][0]
     ev["simcan_eta"]                 = a["simTICLCandidate_eta"][0]
     ev["simcan_phi"]                 = a["simTICLCandidate_phi"][0]
-    ev["simcan_energy"]              = a["simTICLCandidate_regressed_energy"][0]
+    ev["simcan_reg_energy"]          = a["simTICLCandidate_regressed_energy"][0]
+    ev["simcan_raw_energy"]          = a["simTICLCandidate_raw_energy"][0]
     ev["simcan_trkId"]               = a["simTICLCandidate_tracks_in_candidate"][0]
     ev["simcan_simTracksterCPIndex"] = a["simTICLCandidate_simTracksterCPIndex"][0]
     ev["simcan_ispu"]                = a["simTICLCandidate_ispu"][0]
@@ -273,7 +320,7 @@ def collect_hadronic_connections(ev):
     s2r_sharedE = ev["ticlTracksterLinks_simToReco_CP_sharedE"]
     s2r_index   = ev["ticlTracksterLinks_simToReco_CP"]
 
-    simcan_energy = ev["simcan_energy"]
+    simcan_energy = ev["simcan_reg_energy"]
     simcan_pdgid  = ev["simcan_pdgid"]
     simcan_eta    = ev["simcan_eta"]
     ts_energy     = ev["ts_energy"]
@@ -283,6 +330,8 @@ def collect_hadronic_connections(ev):
             continue
         cp_energy = simcan_energy[sim_idx]
         cp_pid    = simcan_pdgid[sim_idx]
+        if abs(cp_pid) == 11 or abs(cp_pid) == 22:
+            continue
         cp_eta    = simcan_eta[sim_idx]
         for idx2, (trackster_idx, shared_energy) in enumerate(zip(idx_arr, shared_arr)):
             if shared_energy <= 0:
@@ -294,7 +343,7 @@ def collect_hadronic_connections(ev):
             connections.append({
                 'cp_idx': sim_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
                 'cp_eta': cp_eta, 'element_idx': trackster_idx, 'element_type': 4,
-                'shared_energy': shared_energy, 'element_energy': ts_energy[trackster_idx],
+                'shared_energy': ts_energy[trackster_idx], 'element_energy': ts_energy[trackster_idx],
                 'is_charged': is_charged_particle(cp_pid)
             })
     return connections
@@ -314,7 +363,8 @@ def collect_em_connections(ev):
         return connections
 
     simcan_pdgid  = ev["simcan_pdgid"]
-    simcan_energy = ev["simcan_energy"]
+    simcan_raw_energy = ev["simcan_raw_energy"]
+    simcan_reg_energy = ev["simcan_reg_energy"]
     simcan_eta    = ev["simcan_eta"]
     simcan_trkId  = ev["simcan_trkId"]
     tsEG_energy   = ev["tsEG_energy"]
@@ -323,7 +373,8 @@ def collect_em_connections(ev):
         if len(shared_arr) == 0:
             continue
         cp_pid    = simcan_pdgid[sim_idx]
-        cp_energy = simcan_energy[sim_idx]
+        cp_raw_energy = simcan_raw_energy[sim_idx]
+        cp_reg_energy = simcan_reg_energy[sim_idx]
         cp_eta    = simcan_eta[sim_idx]
         has_track = len(simcan_trkId[sim_idx]) > 0
 
@@ -338,8 +389,10 @@ def collect_em_connections(ev):
             abs_pid = abs(cp_pid)
             if abs_pid == 11 or (abs_pid == 22 and has_track):
                 elem_type = 2
+                cp_energy = cp_raw_energy
             elif abs_pid == 22:
                 elem_type = 3
+                cp_energy = cp_reg_energy
             else:
                 continue
 
@@ -348,7 +401,7 @@ def collect_em_connections(ev):
                 'cp_eta': cp_eta,
                 'element_idx': n_ts + n_tracks + trackster_idx,
                 'element_type': elem_type,
-                'shared_energy': shared_energy,
+                'shared_energy': tsEG_energy[trackster_idx],
                 'element_energy': tsEG_energy[trackster_idx],
                 'is_charged': is_charged_particle(cp_pid)
             })
@@ -362,7 +415,7 @@ def collect_track_connections(ev):
 
     simcan_trkId  = ev["simcan_trkId"]
     simcan_pdgid  = ev["simcan_pdgid"]
-    simcan_energy = ev["simcan_energy"]
+    simcan_energy = ev["simcan_reg_energy"]
     simcan_eta    = ev["simcan_eta"]
     track_p       = ev["track_p"]
 
@@ -388,7 +441,6 @@ def collect_track_connections(ev):
             })
     return connections
 
-
 def collect_muon_connections(ev):
     connections  = []
     n_ts         = len(ev["ts_energy"])
@@ -406,7 +458,7 @@ def collect_muon_connections(ev):
 
     simcan_trkId  = ev["simcan_trkId"]
     simcan_pdgid  = ev["simcan_pdgid"]
-    simcan_energy = ev["simcan_energy"]
+    simcan_energy = ev["simcan_reg_energy"] 
     simcan_eta    = ev["simcan_eta"]
     tcan_energy   = ev["tcan_energy"]
 
@@ -426,7 +478,7 @@ def collect_muon_connections(ev):
                     connections.append({
                         'cp_idx': cp_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
                         'cp_eta': cp_eta, 'element_idx': muon_offset + ci,
-                        'element_type': 5, 'shared_energy': cp_energy,
+                        'element_type': 5, 'shared_energy': tcan_energy[ci],
                         'element_energy': tcan_energy[ci], 'is_charged': True
                     })
                     break
@@ -439,7 +491,7 @@ def split_caloparticles(connections, ev):
         cp_groups[conn['cp_idx']].append(conn)
 
     split_cps  = []
-    new_cp_idx = len(ev["simcan_energy"])
+    new_cp_idx = len(ev["simcan_raw_energy"])
 
     simcan_ispu  = ev["simcan_ispu"]
     simcan_eta   = ev["simcan_eta"]
@@ -451,20 +503,26 @@ def split_caloparticles(connections, ev):
     track_eta    = ev["track_eta"]
     ts_eta       = ev["ts_eta"]
     tsEG_eta     = ev["tsEG_eta"]
-
+            
     for cp_idx, conns in cp_groups.items():
         if not conns:
             continue
-        cp_pid    = conns[0]['cp_pid']
-        cp_energy = conns[0]['cp_energy']
-        cp_eta    = conns[0]['cp_eta']
-        is_charged= conns[0]['is_charged']
-        cp_ispu   = float(simcan_ispu[cp_idx]) if cp_idx < len(simcan_ispu) else 0.0
 
+        # ispu comes from the simcan array directly — same for all connections of this CP
+        cp_ispu = float(simcan_ispu[cp_idx]) if cp_idx < len(simcan_ispu) else 0.0
+
+        # Use first connection only to determine pid/charge for routing decisions
+        # All other properties (cp_energy, cp_eta, cp_pid) come per-element from each conn
+        abs_pid    = abs(conns[0]['cp_pid'])
+        is_charged = conns[0]['is_charged']
+
+        # Validate each connection by checking eta-sign consistency
+        # elem_eta must have same sign as cp_eta (from the connection itself)
         valid_elements = []
         for conn in conns:
             elem_idx  = conn['element_idx']
             elem_type = conn['element_type']
+            cp_eta    = conn['cp_eta']   # per-connection cp_eta
             elem_eta  = None
             if elem_type == 1:
                 ti = elem_idx - n_ts
@@ -491,62 +549,113 @@ def split_caloparticles(connections, ev):
         em_tracksters   = [e for e in valid_elements if e['element_type'] in (2, 3)]
         muons           = [e for e in valid_elements if e['element_type'] == 5]
 
-        abs_pid = abs(cp_pid)
-
         if abs_pid in (11, 22, 13):
             if abs_pid == 11:
                 relevant_tracks = electron_tracks if electron_tracks else tracks
-                all_relevant    = relevant_tracks + em_tracksters
-                if all_relevant:
-                    for elem in all_relevant:
-                        split_cps.append({
-                            'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                            'element_idx': elem['element_idx'],
-                            'element_type': 6 if elem in electron_tracks else elem['element_type'],
-                            'cp_energy': cp_energy, 'cp_pid': cp_pid,
-                            'weight': 1.0, 'is_winner': True,
-                            'cp_eta': cp_eta, 'ispu': cp_ispu,
-                        })
+                all_relevant_tracks    = relevant_tracks
+                all_relevant_tracksters = em_tracksters
+
+                # Split CP energy independently within tracks and within tracksters
+                total_shared_tracks  = sum(e['shared_energy'] for e in all_relevant_tracks)  or 1.0
+                total_shared_cluster = sum(e['shared_energy'] for e in all_relevant_tracksters) or 1.0
+
+                for elem in all_relevant_tracks:
+                    sf = elem['shared_energy'] / total_shared_tracks
+                    split_cps.append({
+                        'original_idx': cp_idx,
+                        'new_idx':      new_cp_idx,
+                        'element_idx':  elem['element_idx'],
+                        'element_type': 6,
+                        'cp_energy':    elem['cp_energy'] * sf,
+                        'cp_pid':       elem['cp_pid'],
+                        'cp_eta':       elem['cp_eta'],
+                        'weight':       1.0,
+                        'is_winner':    True,
+                        'ispu':         cp_ispu,
+                    })
+                    new_cp_idx += 1
+
+                for elem in all_relevant_tracksters:
+                    sf = elem['shared_energy'] / total_shared_cluster
+                    split_cps.append({
+                        'original_idx': cp_idx,
+                        'new_idx':      new_cp_idx,
+                        'element_idx':  elem['element_idx'],
+                        'element_type': elem['element_type'],    
+                        'cp_energy':    elem['cp_energy'] * sf,
+                        'cp_pid':       elem['cp_pid'],
+                        'cp_eta':       elem['cp_eta'],
+                        'weight':       1.0,
+                        'is_winner':    True,
+                        'ispu':         cp_ispu,
+                    })
                     new_cp_idx += 1
 
             elif abs_pid == 22:
                 if em_tracksters:
                     total_shared = sum(e['shared_energy'] for e in em_tracksters) or 1.0
                     for em_elem in em_tracksters:
+                        sf = em_elem['shared_energy'] / total_shared
                         split_cps.append({
-                            'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                            'element_idx': em_elem['element_idx'], 'element_type': 3,
-                            'cp_energy': cp_energy, 'cp_pid': cp_pid,
-                            'weight': em_elem['shared_energy'] / total_shared,
-                            'is_winner': True, 'cp_eta': cp_eta, 'ispu': cp_ispu,
+                            'original_idx': cp_idx,
+                            'new_idx':      new_cp_idx,
+                            'element_idx':  em_elem['element_idx'],
+                            'element_type': 3,
+                            'cp_energy':    em_elem['cp_energy'] * sf,
+                            'cp_pid':       em_elem['cp_pid'],
+                            'cp_eta':       em_elem['cp_eta'],
+                            'weight':       sf,
+                            'is_winner':    True,
+                            'ispu':         cp_ispu,
                         })
-                    new_cp_idx += 1
+                        new_cp_idx += 1
 
             else:  # muon
-                if muons:
+                total_shared = sum(m['shared_energy'] for m in muons) or 1.0
+                for m in muons:
+                    sf = m['shared_energy'] / total_shared
                     split_cps.append({
-                        'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                        'element_idx': muons[0]['element_idx'], 'element_type': 5,
-                        'cp_energy': cp_energy, 'cp_pid': cp_pid,
-                        'weight': 1.0, 'is_winner': True,
-                        'cp_eta': cp_eta, 'ispu': cp_ispu,
+                        'original_idx': cp_idx,
+                        'new_idx':      new_cp_idx,
+                        'element_idx':  m['element_idx'],
+                        'element_type': 5,
+                        'cp_energy':    m['cp_energy'] * sf,
+                        'cp_pid':       m['cp_pid'],
+                        'cp_eta':       m['cp_eta'],
+                        'weight':       1.0,
+                        'is_winner':    True,
+                        'ispu':         cp_ispu,
                     })
-                    new_cp_idx += 1
+                    new_cp_idx += 1       
 
         elif is_charged and len(tracks) == 1:
+            t = tracks[0]
             split_cps.append({
-                'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                'element_idx': tracks[0]['element_idx'], 'element_type': 1,
-                'cp_energy': cp_energy, 'cp_pid': cp_pid, 'cp_fraction': 1.0,
-                'weight': 1, 'is_winner': True, 'cp_eta': cp_eta, 'ispu': cp_ispu,
+                'original_idx': cp_idx,
+                'new_idx':      new_cp_idx,
+                'element_idx':  t['element_idx'],
+                'element_type': 1,
+                'cp_energy':    t['cp_energy'],   
+                'cp_pid':       t['cp_pid'],
+                'cp_eta':       t['cp_eta'],
+                'cp_fraction':  1.0,
+                'weight':       1,
+                'is_winner':    True,
+                'ispu':         cp_ispu,
             })
             new_cp_idx += 1
             for had in had_tracksters:
                 split_cps.append({
-                    'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                    'element_idx': had['element_idx'], 'element_type': 4,
-                    'cp_energy': 0.0, 'cp_pid': cp_pid, 'weight': 0.0,
-                    'is_winner': False, 'cp_eta': cp_eta, 'ispu': cp_ispu,
+                    'original_idx': cp_idx,
+                    'new_idx':      new_cp_idx,
+                    'element_idx':  had['element_idx'],
+                    'element_type': 4,
+                    'cp_energy':    0.0,            
+                    'cp_pid':       had['cp_pid'],
+                    'cp_eta':       had['cp_eta'],
+                    'weight':       0.0,
+                    'is_winner':    False,
+                    'ispu':         cp_ispu,
                 })
             new_cp_idx += 1
 
@@ -555,33 +664,50 @@ def split_caloparticles(connections, ev):
             for track in tracks:
                 sf = track['shared_energy'] / total_shared
                 split_cps.append({
-                    'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                    'element_idx': track['element_idx'], 'element_type': 1,
-                    'cp_energy': cp_energy * sf, 'cp_pid': cp_pid,
-                    'weight': 1, 'is_winner': True, 'cp_eta': cp_eta, 'ispu': cp_ispu,
+                    'original_idx': cp_idx,
+                    'new_idx':      new_cp_idx,
+                    'element_idx':  track['element_idx'],
+                    'element_type': 1,
+                    'cp_energy':    track['cp_energy'] * sf,   # from THIS track connection
+                    'cp_pid':       track['cp_pid'],
+                    'cp_eta':       track['cp_eta'],
+                    'weight':       1,
+                    'is_winner':    True,
+                    'ispu':         cp_ispu,
                 })
-            new_cp_idx += 1
+                new_cp_idx += 1
             for had in had_tracksters:
                 split_cps.append({
-                    'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                    'element_idx': had['element_idx'], 'element_type': 4,
-                    'cp_energy': 0.0, 'cp_pid': cp_pid, 'weight': 0.0,
-                    'is_winner': False, 'cp_eta': cp_eta, 'ispu': cp_ispu,
+                    'original_idx': cp_idx,
+                    'new_idx':      new_cp_idx,
+                    'element_idx':  had['element_idx'],
+                    'element_type': 4,
+                    'cp_energy':    0.0,            # dummy , intentionally zero
+                    'cp_pid':       had['cp_pid'],
+                    'cp_eta':       had['cp_eta'],
+                    'weight':       0.0,
+                    'is_winner':    False,
+                    'ispu':         cp_ispu,
                 })
             new_cp_idx += 1
 
-        else:
-            all_elements = had_tracksters
-            total_shared = sum(e['shared_energy'] for e in all_elements) or 1.0
-            for elem in all_elements:
+        else:  # neutral hadrons / charged hadrons without tracks matched 
+            total_shared = sum(e['shared_energy'] for e in had_tracksters) or 1.0
+            for elem in had_tracksters:
                 sf = elem['shared_energy'] / total_shared
                 split_cps.append({
-                    'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                    'element_idx': elem['element_idx'], 'element_type': elem['element_type'],
-                    'cp_energy': cp_energy * sf, 'cp_pid': cp_pid,
-                    'weight': 1, 'is_winner': True, 'cp_eta': cp_eta, 'ispu': cp_ispu,
+                    'original_idx': cp_idx,
+                    'new_idx':      new_cp_idx,
+                    'element_idx':  elem['element_idx'],
+                    'element_type': elem['element_type'],
+                    'cp_energy':    elem['cp_energy'] * sf,   # from THIS connection
+                    'cp_pid':       elem['cp_pid'],
+                    'cp_eta':       elem['cp_eta'],
+                    'weight':       1,
+                    'is_winner':    True,
+                    'ispu':         cp_ispu,
                 })
-            new_cp_idx += 1
+                new_cp_idx += 1
 
     return split_cps
 
@@ -698,13 +824,13 @@ def make_graph(ev, iev):
 
     for sc in split_cps:
         original_idx = sc['original_idx']
-        if original_idx >= len(ev["simcan_energy"]):
+        if original_idx >= len(ev["simcan_raw_energy"]):
             continue
         cp_idx    = sc['new_idx']
-        cp_eta    = float(simcan_eta[original_idx])
-        cp_phi    = float(simcan_phi[original_idx])
-        cp_pid_v  = simcan_pid[original_idx]
-        cp_energy = float(sc['cp_energy'])
+        cp_eta    = float(sc['cp_eta'])                          # from connection
+        cp_phi    = float(simcan_phi[original_idx])              # phi not in connection, still from simcan
+        cp_pid_v  = int(sc['cp_pid'])                            # from connection
+        cp_energy = float(sc['cp_energy'])                       # from connection
         theta     = 2.0 * math.atan(math.exp(-cp_eta))
         cp_pt     = cp_energy * math.sin(theta)
         node_id   = ("cp", cp_idx)
