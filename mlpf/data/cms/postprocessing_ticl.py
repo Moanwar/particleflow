@@ -13,7 +13,7 @@ import awkward
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
-# python3 postprocessing_ticl_fast.py --input 211_0pu.txt --output ticl_graph_data_pion_0pu.pkl
+# python3 postprocessing_ticl.py --input 211_0pu.txt --output ticl_graph_data_pion_0pu.pkl
 
 # Prevent threading issues
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -23,20 +23,29 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 # Feature definitions
+#elem_branches = [
+#    "typ", "pt", "eta", "phi", "energy", "layer", "charge",
+#    "px", "py", "pz",
+#    "sigma_x", "sigma_y", "sigma_z", "deltap", "sigmadeltap",
+#    "num_hits", "cluster_flags", "corr_energy", "corr_energy_err",
+#    "vx", "vy", "vz", "pterror", "etaerror", "phierror", "lambd", "lambdaerror",
+#    "theta", "thetaerror", "time", "timeerror", "etaerror1", "etaerror2",
+#]
+
 elem_branches = [
-    "typ", "pt", "eta", "phi", "energy", "layer", "charge",
-    "px", "py", "pz",
-    "sigma_x", "sigma_y", "sigma_z", "deltap", "sigmadeltap",
-    "num_hits", "cluster_flags", "corr_energy", "corr_energy_err",
-    "vx", "vy", "vz", "pterror", "etaerror", "phierror", "lambd", "lambdaerror",
-    "theta", "thetaerror", "time", "timeerror", "etaerror1", "etaerror2",
+    "typ", "pt", "eta", "phi", "energy", "charge","px", "py", "pz",
 ]
 
 particle_feature_order = [
     "pid", "charge", "pt", "eta", "sin_phi", "cos_phi", "energy",
-    "ispu", "generatorStatus", "simulatorStatus", "cp_to_track",
-    "cp_to_cluster", "jet_idx"
+    "ispu", "simulatorStatus", "cp_to_track", "cp_to_cluster", "jet_idx"
 ]
+
+#particle_feature_order = [
+#    "pid", "charge", "pt", "eta", "sin_phi", "cos_phi", "energy",
+#    "ispu", "generatorStatus", "simulatorStatus", "cp_to_track",
+#    "cp_to_cluster", "jet_idx"
+#]
 
 # Pre-build lookup sets/dicts once at module level
 _NEUTRAL_PIDS   = frozenset([130, 22, 310])
@@ -124,27 +133,6 @@ def compute_target_jets(ytarget, pt_min=3.0):
 def compute_genmet(g):
     gen_nodes = [n for n in g.nodes if n[0] == "gen"]
     attrs = g.nodes
-    print(f"Total gen nodes: {len(gen_nodes)}")
-    all_neutrinos = [n for n in gen_nodes if attrs[n].get("pid", 0) in _NEUTRINO_PIDS]
-    print(f"All neutrinos (any status):")
-    for n in all_neutrinos:
-        print(f"  {n}: pid={attrs[n].get('pid')}, status={attrs[n].get('status')}, "
-              f"pt={attrs[n].get('pt'):.2f}, phi={attrs[n].get('phi'):.3f}, "
-              f"num_daughters={attrs[n].get('num_daughters',0)}")
-    status1 = [n for n in all_neutrinos if attrs[n].get("status", 0) == 1]
-    nodaughters = [n for n in all_neutrinos if attrs[n].get("num_daughters", 0) == 0]
-    print(f"status==1: {len(status1)}, num_daughters==0: {len(nodaughters)}")
-    if nodaughters:
-        pts  = np.array([attrs[n]["pt"]  for n in nodaughters])
-        phis = np.array([attrs[n]["phi"] for n in nodaughters])
-        print(f"pts: {pts}")
-        print(f"phis: {phis}")
-        sum_px = np.sum(pts * np.cos(phis))
-        sum_py = np.sum(pts * np.sin(phis))
-        print(f"sum_px={sum_px:.3f}, sum_py={sum_py:.3f}")
-        met = math.hypot(sum_px, sum_py)
-        print(f"MET = {met:.3f}")
-        
     neutrinos = [n for n in gen_nodes
                  if attrs[n].get("status", 0) == 1
                  and attrs[n].get("pid", 0) in _NEUTRINO_PIDS
@@ -426,7 +414,7 @@ def collect_track_connections(ev):
         cp_energy   = simcan_energy[cp_idx]
         cp_eta      = simcan_eta[cp_idx]
         is_electron = (abs(cp_pid) == 11)
-
+        element_type = 5 if abs(cp_pid) == 13 else 1        
         for track_id in track_indices:
             track_idx = track_id_to_idx.get(track_id)
             if track_idx is None:
@@ -434,54 +422,11 @@ def collect_track_connections(ev):
             tp = track_p[track_idx]
             connections.append({
                 'cp_idx': cp_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
-                'cp_eta': cp_eta, 'element_idx': n_ts + track_idx, 'element_type': 1,
+                'cp_eta': cp_eta, 'element_idx': n_ts + track_idx, 'element_type': element_type,
                 'shared_energy': tp, 'element_energy': tp,
                 'is_charged': is_charged_particle(cp_pid),
                 'is_electron_track': is_electron
             })
-    return connections
-
-def collect_muon_connections(ev):
-    connections  = []
-    n_ts         = len(ev["ts_energy"])
-    n_tracks     = len(ev["track_pt"])
-    n_ts_eg      = len(ev["tsEG_energy"])
-    muon_offset  = n_ts + n_tracks + n_ts_eg
-
-    track_id_to_idx   = {tid: i for i, tid in enumerate(ev["track_id"])}
-    muon_cand_indices = [ci for ci in range(len(ev["tcan_pt"])) if abs(ev["candidate_pdgId"][ci]) == 13]
-
-    cand_track_sets = {}
-    for ci in muon_cand_indices:
-        td = ev["trks_indcies"][ci]
-        cand_track_sets[ci] = set(td) if hasattr(td, '__len__') else ({td} if td != -1 else set())
-
-    simcan_trkId  = ev["simcan_trkId"]
-    simcan_pdgid  = ev["simcan_pdgid"]
-    simcan_energy = ev["simcan_reg_energy"] 
-    simcan_eta    = ev["simcan_eta"]
-    tcan_energy   = ev["tcan_energy"]
-
-    for cp_idx, track_indices in enumerate(simcan_trkId):
-        if abs(simcan_pdgid[cp_idx]) != 13 or len(track_indices) == 0:
-            continue
-        cp_energy = simcan_energy[cp_idx]
-        cp_eta    = simcan_eta[cp_idx]
-        cp_pid    = simcan_pdgid[cp_idx]
-
-        for track_id in track_indices:
-            track_idx = track_id_to_idx.get(track_id)
-            if track_idx is None:
-                continue
-            for ci in muon_cand_indices:
-                if track_idx in cand_track_sets[ci]:
-                    connections.append({
-                        'cp_idx': cp_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
-                        'cp_eta': cp_eta, 'element_idx': muon_offset + ci,
-                        'element_type': 5, 'shared_energy': tcan_energy[ci],
-                        'element_energy': tcan_energy[ci], 'is_charged': True
-                    })
-                    break
     return connections
 
 
@@ -755,11 +700,9 @@ def make_graph(ev, iev):
     track_nodes = []
     for itrk in range(n_tracks):
         tid = trk_id[itrk]
-        if tid in track_id_to_isMuon:
-            continue
         if trk_pt[itrk] < 1 or trk_quality[itrk] < 1:
             continue
-        elem_type = 6 if tid in track_id_to_iselectron else 1
+        elem_type = 6 if tid in track_id_to_iselectron else 5 if tid in track_id_to_isMuon else 1
         track_nodes.append((
             ("elem", n_ts + itrk),
             dict(
@@ -790,25 +733,10 @@ def make_graph(ev, iev):
         for i in range(n_ts_eg)
     )
 
-    muon_offset = n_ts + n_tracks + n_ts_eg
-    muon_nodes  = []
-    for ipf, pid in enumerate(ev["candidate_pdgId"]):
-        if abs(pid) == 13:
-            pt  = float(ev["tcan_pt"][ipf]); phi = float(ev["tcan_phi"][ipf])
-            eta = float(ev["tcan_eta"][ipf])
-            muon_nodes.append((
-                ("elem", muon_offset + ipf),
-                dict(typ=5, pt=pt, energy=float(ev["tcan_energy"][ipf]),
-                     eta=eta, phi=phi, charge=get_charge(pid),
-                     px=pt * math.cos(phi), py=pt * math.sin(phi),
-                     pz=pt * math.sinh(eta))
-            ))
-    g.add_nodes_from(muon_nodes)
 
     all_connections = (collect_hadronic_connections(ev) +
                        collect_em_connections(ev) +
-                       collect_track_connections(ev) +
-                       collect_muon_connections(ev))
+                       collect_track_connections(ev))
     split_cps = split_caloparticles(all_connections, ev)
 
     cp_totals = defaultdict(lambda: {'track': 0.0, 'cluster': 0.0})
@@ -894,12 +822,16 @@ def make_graph(ev, iev):
             if 0 <= trk_idx < n_tracks:
                 en = ("elem", n_ts + trk_idx)
                 if en in g.nodes:
-                    if g.nodes[en]["typ"] != 6:
+                    if g.nodes[en]["typ"] not in (5, 6):
                         cand_edges.append((en, cand_node, 1.0))
         if abs(ev["candidate_pdgId"][cand_idx]) == 13:
-            mn = ("elem", muon_offset + cand_idx)
-            if mn in g.nodes:
-                cand_edges.append((mn, cand_node, 1.0))
+            trk_data = ev["trks_indcies"][cand_idx]
+            trk_idx_list = trk_data if hasattr(trk_data, '__len__') else ([trk_data] if trk_data != -1 else [])
+            for trk_idx in trk_idx_list:
+                if 0 <= trk_idx < n_tracks:
+                    en = ("elem", n_ts + trk_idx)
+                    if en in g.nodes and g.nodes[en]["typ"] == 5:
+                        cand_edges.append((en, cand_node, 1.0))
 
     g.add_edges_from((u, v, {"weight": w}) for u, v, w in cand_edges)
 
