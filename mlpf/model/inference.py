@@ -146,6 +146,7 @@ def predict_one_batch(conv_type, model, i, batch, rank, jetdef, jet_ptcut, jet_m
     awkward.to_parquet(
         awkward.Array(outdict),
         outfile,
+        compression="none",
     )
     _logger.info(f"Saved predictions at {outfile}")
 
@@ -193,6 +194,7 @@ def make_plots(outpath, sample, dataset, dir_name="", ntest_files=-1):
     yvals, X, _ = load_eval_data(str(pred_path / "*.parquet"), ntest_files)
     _logger.info(f"Loaded data for plotting from {pred_path}")
 
+    _logger.info("Calling plot_num_elements...")
     plot_num_elements(X, cp_dir=plots_path)
     _logger.info("Plotted number of elements")
 

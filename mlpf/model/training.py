@@ -74,7 +74,7 @@ from mlpf.model.mlpf import MLPF, configure_model_trainable
 from mlpf.model.PFDataset import Collater, PFDataset, get_interleaved_dataloaders
 from mlpf.model.losses import mlpf_loss
 from mlpf.utils import create_comet_experiment
-
+from typing import Union
 
 def model_step(batch, model, loss_fn):
     _logger.debug(f"model_step X={batch.X.shape}")
@@ -702,7 +702,7 @@ def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtyp
 
         jetdef = fastjet.JetDefinition(fastjet.ee_genkt_algorithm, 0.4, -1.0)
         jet_ptcut = 5
-    elif config["dataset"] == "cms":
+    elif config["dataset"] in ("cms", "cms_ticl"):
         import fastjet
 
         jetdef = fastjet.JetDefinition(fastjet.antikt_algorithm, 0.4)
@@ -728,7 +728,8 @@ def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtyp
         dist.barrier()  # block until all workers finished executing run_predictions()
 
 
-def run(rank: int | str, world_size: int, config: dict, outdir: str, logfile: str):
+#def run(rank: int | str, world_size: int, config: dict, outdir: str, logfile: str):
+def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfile: str):
     # per-rank log
     _configLogger("mlpf", rank, filename=f"{logfile}.{rank}")
 

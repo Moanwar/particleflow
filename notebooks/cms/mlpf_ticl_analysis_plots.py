@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""
+MLPF CMS Analysis for TICL Graph Data
+"""
 
 import sys, os, glob, pickle, warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -28,8 +31,9 @@ PLOT_DIR     = "mlpf_analysis_plots"
 _JET_DEF = fastjet.JetDefinition(fastjet.antikt_algorithm, JET_RADIUS)
 
 TICL_TYPE_NAMES = {
-    1: "Track", 2: "EM Trackster e", 3: "EM Trackster g",
-    4: "Hadronic Trackster", 5: "Muon", 6: "Electron Track",
+    1: "Track",
+    2: "EM Trackster",
+    4: "Hadronic Trackster",
 }
 
 def _savefig(fig, name):
@@ -41,6 +45,7 @@ def _savefig(fig, name):
     plt.close(fig)
 
 
+# Loading
 def _load_one(path):
     try:
         with open(path, "rb") as f:
@@ -59,6 +64,7 @@ def load_files_parallel(files, max_workers=None):
     return out
 
 
+# Conversion
 def convert_events_vectorised(ticl_data):
     cols = {
         "Xelem":   {f: [] for f in ["typ","pt","eta","energy","phi","charge"]},
@@ -102,6 +108,8 @@ def convert_events_vectorised(ticl_data):
         else:
             for f in cols["pythia"]: cols["pythia"][f].append(np.array([],np.float32))
 
+        # preprocessing saves genmet as np.array([met_magnitude, met_phi])
+        # so gm[0] is the scalar MET magnitude
         gm = ev.get("genmet", None)
         if gm is None:
             cols["genmet"].append(0.0)
@@ -144,6 +152,7 @@ def convert_events_vectorised(ticl_data):
         "phi": ak.Array(gj_phis), "energy": ak.Array(gj_ens),
     }))
     return arrs_awk, arrs_flat, genmet_arr, genjet_cmssw
+
 
 
 def _compute_met(pt_awk, phi_awk):
@@ -215,7 +224,7 @@ def plot_met(arrs_awk, genmet_arr, plot_dir):
     else:
         ax.text(0.5, 0.5, "Insufficient data for hist2d\n(genMET may be zero in this sample)",
                 transform=ax.transAxes, ha="center", va="center", fontsize=14, color="red")
-        print("   WARNING: skipping hist2d not enough valid (genMET>0, targetMET>0) pairs")
+        print("   WARNING: skipping hist2d — not enough valid (genMET>0, targetMET>0) pairs")
     ax.set_xlabel("Pythia MET (GeV)")
     ax.set_ylabel("Target MET, ispu < 0.5 (GeV)")
     cms_label(ax)
@@ -278,16 +287,16 @@ def match_jet_collections(jets_coll, ref_key, tgt_key, dR_max=0.1):
         te = ak.to_numpy(tgt_jets[iev].eta).astype(float)
         tf = ak.to_numpy(tgt_jets[iev].phi).astype(float)
         if not len(rp) or not len(tp): continue
-        used = np.zeros(len(tp), dtype=bool)
         for i in range(len(rp)):
             deta = te - re[i]
             dphi = np.arctan2(np.sin(tf - rf[i]), np.cos(tf - rf[i]))
             dR   = np.hypot(deta, dphi)
-            dR[used] = 999.0
-            b = np.argmin(dR)
+            b    = np.argmin(dR)
             if dR[b] < dR_max:
-                ref_pts.append(rp[i]); tgt_pts.append(tp[b]); used[b] = True
+                ref_pts.append(rp[i]); tgt_pts.append(tp[b])
     return np.array(ref_pts), np.array(tgt_pts)
+
+
 
 def _frac_bins(vals, ispu, bins):
     out = []
@@ -394,6 +403,7 @@ def _worker_elem_ptratio(args):
     plt.close(fig)
 
 
+# Standard plots
 def plot_pu_fraction(arrs_flat, plot_dir):
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.hist(arrs_flat["ytarget"]["ispu"], bins=np.linspace(0,1,101), histtype="step", lw=2)
@@ -466,6 +476,7 @@ def plot_event_display(arrs_awk, jets_coll, plot_dir, iev=2):
     ax.set_xlim(-6,6); ax.set_ylim(-5,5); ax.grid(alpha=0.3)
     ax.set_title(f"Event Display (event {iev})")
     _savefig(fig, os.path.join(plot_dir, f"event_display_{iev}.png"))
+
 
 
 def _dispatch(tasks, worker_fn, desc, max_workers=None):
@@ -592,6 +603,124 @@ def plot_overall_pt_distribution(arrs_awk, plot_dir):
     _savefig(fig, os.path.join(plot_dir, "overall_pt_distribution.png"))
 
 
+def plot_sumpt_per_event(arrs_awk, plot_dir):
+    # PID MAP 
+    SUMPT_PID_MAP = {
+        "pion":     [211],
+        "kaon":     [321, 130, 310],
+        "muon":     [13],
+        "electron": [11],
+        "photon":   [22],
+        "all":      None,              # None = no PID filter
+    }
+
+    # GROUPS TO PLOT 
+    SUMPT_GROUPS = [
+        ["all"],
+        ["pion"],
+        ["kaon"],
+        ["muon"],
+        ["electron"],
+        ["photon"],
+        ["pion", "kaon"],           
+        ["photon", "electron"],       
+        ["photon", "electron","pion"],
+        ["photon", "electron","pion","kaon"],
+    ]
+
+    def _get_pids(pid_names):
+        for name in pid_names:
+            if SUMPT_PID_MAP.get(name) is None:
+                return None  # all particles
+        pids = []
+        for name in pid_names:
+            pids.extend(SUMPT_PID_MAP.get(name, []))
+        return pids
+
+    def _pid_mask_awk(arr_pid, pids):
+        if pids is None:
+            return ak.ones_like(arr_pid, dtype=bool)
+        mask = ak.zeros_like(arr_pid, dtype=bool)
+        for pid in pids:
+            mask = mask | (arr_pid == pid)
+        return mask
+
+    def _sumpt_awk(pt_arr, pid_arr, ispu_arr, pids):
+        mask = _pid_mask_awk(pid_arr, pids) & (ispu_arr < 0.5)
+        return ak.to_numpy(ak.sum(pt_arr[mask], axis=1)).astype(np.float32)
+
+    def _sumpt_pythia(pt_arr, pid_arr, pids):
+        mask = _pid_mask_awk(pid_arr, pids)
+        return ak.to_numpy(ak.sum(pt_arr[mask], axis=1)).astype(np.float32)
+
+    def _make_hist_plot(py_sumpt, tg_sumpt, label, title, fname):
+        all_vals = np.concatenate([py_sumpt[py_sumpt > 0], tg_sumpt[tg_sumpt > 0]])
+        if len(all_vals) < 2:
+            print(f"     Skipping {title} no entries found")
+            return
+        lo = max(np.log10(np.percentile(all_vals,  1)), -1)
+        hi = min(np.log10(np.percentile(all_vals, 99)) + 0.5, 6)
+        b  = np.logspace(lo, hi, 100)
+
+        fig, ax = plt.subplots(figsize=(10, 7))
+        ax.hist(py_sumpt, bins=b, histtype="step", lw=2, label="Pythia")
+        ax.hist(tg_sumpt, bins=b, histtype="step", lw=2, label="MLPF target (ispu<0.5)")
+        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlabel(rf"$\sum p_T$ per event {title} (GeV)")
+        ax.set_ylabel("Events / bin")
+        ax.legend(loc="best", fontsize=12); ax.grid(alpha=0.3)
+        cms_label(ax)
+        #sample_label(ax, SAMPLE_NAME)
+        _savefig(fig, os.path.join(plot_dir, fname))
+        print(f"     Pythia mean={py_sumpt.mean():.1f}  target(noPU) mean={tg_sumpt.mean():.1f} GeV")
+
+    # ---- loop over groups ----
+    for group in SUMPT_GROUPS:
+        if len(group) == 1:
+            # single PID just one plot
+            name  = group[0]
+            pids  = _get_pids(group)
+            title = name.capitalize()
+            label = name
+            py_s  = _sumpt_pythia(arrs_awk["pythia"]["pt"],
+                                   arrs_awk["pythia"]["pid"], pids)
+            tg_s  = _sumpt_awk(arrs_awk["ytarget"]["pt"],
+                                arrs_awk["ytarget"]["pid"],
+                                arrs_awk["ytarget"]["ispu"], pids)
+            print(f"   [{title}]")
+            _make_hist_plot(py_s, tg_s, label, title,
+                            f"sumpt_per_event_{label}_dist.png")
+
+        else:
+            # multi-PID group: individual plot per PID + one combined
+            print(f"   [{' + '.join(g.capitalize() for g in group)}]")
+
+            # individual plots first
+            for name in group:
+                pids  = _get_pids([name])
+                title = name.capitalize()
+                py_s  = _sumpt_pythia(arrs_awk["pythia"]["pt"],
+                                       arrs_awk["pythia"]["pid"], pids)
+                tg_s  = _sumpt_awk(arrs_awk["ytarget"]["pt"],
+                                    arrs_awk["ytarget"]["pid"],
+                                    arrs_awk["ytarget"]["ispu"], pids)
+                print(f"     individual: {title}")
+                _make_hist_plot(py_s, tg_s, name, title,
+                                f"sumpt_per_event_{name}_dist.png")
+
+            # combined plot
+            pids_combined = _get_pids(group)
+            title_combined = " + ".join(g.capitalize() for g in group)
+            label_combined = "_".join(group)
+            py_s  = _sumpt_pythia(arrs_awk["pythia"]["pt"],
+                                   arrs_awk["pythia"]["pid"], pids_combined)
+            tg_s  = _sumpt_awk(arrs_awk["ytarget"]["pt"],
+                                arrs_awk["ytarget"]["pid"],
+                                arrs_awk["ytarget"]["ispu"], pids_combined)
+            print(f"     combined: {title_combined}")
+            _make_hist_plot(py_s, tg_s, label_combined, title_combined,
+                            f"sumpt_per_event_{label_combined}_dist.png")
+
 def plot_jet_response_loglog(jets_coll, plot_dir):
     if "cmssw" not in jets_coll or "ytarget" not in jets_coll:
         return
@@ -619,31 +748,7 @@ def plot_jet_response_loglog(jets_coll, plot_dir):
     #sample_label(ax, SAMPLE_NAME)
     _savefig(fig, os.path.join(plot_dir, "jet_response_loglog.png"))
 
-def plot_jet_response(jets_coll, plot_dir):
-    if "cmssw" not in jets_coll or "ytarget" not in jets_coll:
-        return
-    print("   Matching jets for response plot...")
 
-    ref_tgt,  tgt_pt  = match_jet_collections(jets_coll, "cmssw", "ytarget",      dR_max=0.1)
-    ref_nopu, nopu_pt = match_jet_collections(jets_coll, "cmssw", "ytarget_nopu", dR_max=0.1)
-    ref_cand, cand_pt = np.array([]), np.array([])
-    if "ycand" in jets_coll:
-        ref_cand, cand_pt = match_jet_collections(jets_coll, "cmssw", "ycand", dR_max=0.1)
-
-    b = np.logspace(-1, 1, 600)
-    fig, ax = plt.subplots(figsize=(8, 7))
-    if len(ref_cand):
-        ax.hist(cand_pt / ref_cand, bins=b, histtype="step", lw=1, label="PF")
-    if len(ref_tgt):
-        ax.hist(tgt_pt  / ref_tgt,  bins=b, histtype="step", lw=1, label="MLPF target")
-    #if len(ref_nopu):
-    #    ax.hist(nopu_pt / ref_nopu, bins=b, histtype="step", lw=1, label="MLPF target, no PU")
-    ax.axvline(1.0, color="black", ls="--", lw=0.5)
-    ax.set_xlabel("jet $p_T$ / genjet $p_T$"); ax.set_ylabel("Counts")
-    ax.legend(loc="upper left", fontsize=12); ax.grid(alpha=0.3, ls="--")
-    ax.set_xlim(0, 2)
-    cms_label(ax)
-    _savefig(fig, os.path.join(plot_dir, "jet_response.png"))
 
 def print_electron_elem_type_diagnostic(arrs_flat):
     msk = (arrs_flat["ytarget"]["pid"] == 11) & (arrs_flat["ytarget"]["pt"] > 5)
@@ -655,7 +760,7 @@ def print_electron_elem_type_diagnostic(arrs_flat):
 
 
 def plot_element_plots_parallel(arrs_flat, plot_dir):
-    elem_types = [t for t in [1, 2, 3, 4, 5, 6]
+    elem_types = [t for t in [1, 2, 4]
                   if np.any(arrs_flat["Xelem"]["typ"] == t)]
     match_tasks, ratio_tasks = [], []
     for et in elem_types:
@@ -672,8 +777,9 @@ def plot_element_plots_parallel(arrs_flat, plot_dir):
     _dispatch(ratio_tasks, _worker_elem_ptratio,  "element pT ratio")
 
 
+# Main
 def main():
-    print("="*60); print("MLPF TICL plotting"); print("="*60)
+    print("="*60); print("MLPF CMS Analysis - OPTIMISED v5"); print("="*60)
 
     file_pattern = "/afs/cern.ch/work/m/moanwar/private/mlpf/particleflow/mlpf/data/cms/raw/*.pkl"
     files = sorted(glob.glob(file_pattern))[:50]
@@ -717,12 +823,14 @@ def main():
     print("\n9. Overall pT distribution (all PIDs)...")
     plot_overall_pt_distribution(arrs_awk, plot_dir)
 
+    print("\n9b. Sum-pT per event (Pythia vs target vs PF)...")
+    plot_sumpt_per_event(arrs_awk, plot_dir)
+
     print("\n10. Jet response (linear, target + PF)...")
     plot_jet_response_single(jets_coll, plot_dir)
 
     print("\n11. Jet response (log-log, 3 collections)...")
     plot_jet_response_loglog(jets_coll, plot_dir)
-    plot_jet_response(jets_coll, plot_dir)
 
     print("\n12. Element matching + pT ratio plots (types 1,2,3,4,5,6)...")
     plot_element_plots_parallel(arrs_flat, plot_dir)

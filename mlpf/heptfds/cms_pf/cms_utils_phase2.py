@@ -8,8 +8,8 @@ import tensorflow_datasets as tfds
 
 tfds.disable_progress_bar()
 
-ELEM_LABELS_TICL = [0, 1, 2, 3, 4, 5, 6]
-ELEM_NAMES_TICL = ["NONE", "TRACK", "EM_ELE", "EM_PHO", "HAD_TS", "MUON", "ELE_TRACK"]
+ELEM_LABELS_TICL = [0, 1, 2, 4]
+ELEM_NAMES_TICL = ["NONE", "TRACK", "EM_TS", "HAD_TS"]
 
 CLASS_LABELS_TICL = [0, 211, 130, 22, 11, 13]
 CLASS_NAMES_TICL = ["none", "ch.had", "n.had", "gamma", "ele", "mu"]
@@ -23,7 +23,7 @@ X_FEATURES = [
 Y_FEATURES = [
     "typ_idx",
     "charge", "pt", "eta", "sin_phi", "cos_phi", "energy",
-    "ispu", "simulatorStatus", "cp_to_track", "cp_to_cluster", "jet_idx",
+    "ispu", "generatorStatus", "simulatorStatus", "cp_to_track", "cp_to_cluster", "jet_idx",
 ]
 
 NUM_SPLITS = 10
@@ -52,12 +52,6 @@ def prepare_data_ticl(fn):
         ytarget = ak.Array(event["ytarget"])
         ycand   = ak.Array(event["ycand"])
 
-        # Remove unassigned EG tracksters (typ=-1)
-        msk_valid = Xelem["typ"] != -1
-        Xelem   = Xelem[msk_valid]
-        ytarget = ytarget[msk_valid]
-        ycand   = ycand[msk_valid]
-
         # Add sin/cos phi to Xelem
         Xelem["sin_phi"] = np.sin(Xelem["phi"])
         Xelem["cos_phi"] = np.cos(Xelem["phi"])
@@ -66,6 +60,10 @@ def prepare_data_ticl(fn):
         Xelem["typ_idx"] = np.array(
             [ELEM_LABELS_TICL.index(int(i)) if int(i) in ELEM_LABELS_TICL else 0
              for i in Xelem["typ"]], dtype=np.float32)
+
+        # Add generatorStatus as zeros (not available in TICL data)
+        ytarget["generatorStatus"] = np.zeros(len(ytarget), dtype=np.float32)
+        ycand["generatorStatus"]   = np.zeros(len(ycand),   dtype=np.float32)
 
         # Map pid to class index for ytarget
         pids_remapped = [map_pdgid_to_candid(abs(int(pid)), q)
@@ -132,7 +130,7 @@ def split_list(lst, x):
     return result
 
 
-def split_sample(path, builder_config, num_splits=NUM_SPLITS, train_frac=0.9):
+def split_sample(path, builder_config, num_splits=NUM_SPLITS, train_frac=0.8):
     files = sorted(list(path.glob("*.pkl*")))
     print(f"Found {len(files)} files in {path}")
     assert len(files) > 0

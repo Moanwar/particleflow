@@ -138,12 +138,14 @@ EVALUATION_DATASET_NAMES = {
     "cms_pf_ztt_nopu": r"$\mathrm{Z}\rightarrow \mathrm{\tau}\mathrm{\tau}$, no pileup",
     "cms_pf_photonjet": r"$\gamma$ + jets, pileup 55-75",
     "cms_pf_photonjet_nopu": r"$\gamma$ + jets, no pileup",
+    "cms_pf_ticl_nopu": r"TICL, no pileup",
 }
 
 GENJET_BINS_PT_DATASET = {
     "clic": [10, 20, 40, 60, 80, 100, 200],
     "cld": [10, 20, 40, 60, 80, 100, 200],
     "cms": [10, 20, 40, 60, 80, 100, 200, 400, 800],
+    "cms_ticl": [10, 20, 40, 60, 80, 100, 200, 400, 800],
 }
 
 SAMPLE_NAME_TO_PROCESS = {
@@ -276,7 +278,7 @@ def experiment_label(ax, experiment="CMS", tag1="Simulation Preliminary", tag2="
 
 
 def cms_label(ax):
-    return experiment_label(ax, experiment="CMS", tag1="Simulation Preliminary", tag2="Run 3 (14 TeV)", x1=0.13)
+    return experiment_label(ax, experiment="CMS", tag1="Simulation ", tag2=" Run4", x1=0.13)
 
 
 def clic_label(ax):
@@ -289,6 +291,7 @@ def cld_label(ax):
 
 EXPERIMENT_LABELS = {
     "cms": cms_label,
+    "cms_ticl": cms_label,
     "clic": clic_label,
     "cld": cld_label,
 }
@@ -456,7 +459,8 @@ def save_img(outfile, epoch=None, cp_dir=None, comet_experiment=None):
     if cp_dir:
         image_path = str(cp_dir / outfile)
         plt.savefig(image_path, dpi=100, bbox_inches="tight")
-        plt.savefig(image_path.replace(".png", ".pdf"), bbox_inches="tight")
+        # PDF saving disabled - too slow on AFS
+        # plt.savefig(image_path.replace(".png", ".pdf"), bbox_inches="tight")
         plt.clf()
         if comet_experiment:
             comet_experiment.log_image(image_path, step=epoch - 1)

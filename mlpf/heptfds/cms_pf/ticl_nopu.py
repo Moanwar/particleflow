@@ -62,8 +62,8 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
         import pickle
         
         # Get paths from environment variables with defaults
-        input_dir = os.environ.get("INPUT_DIR", "/afs/cern.ch/work/m/moanwar/private/mlpf/particleflow/mlpf/data/cms/raw")
-        output_base = os.environ.get("OUTPUT_DIR", "/afs/cern.ch/work/m/moanwar/private/mlpf/particleflow/mlpf/data/cms/processed")
+        input_dir = os.environ.get("INPUT_DIR", "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files/")
+        output_base = os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/processed/")
         
         # Construct full paths
         input_pkl = os.path.join(input_dir, "ticl_graph_data_prt.pkl")
