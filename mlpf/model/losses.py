@@ -31,7 +31,20 @@ def mlpf_loss(y, ypred, batch):
         batch [PFBatch]: the MLPF inputs
     """
     loss = {}
-    loss_obj_id = FocalLoss(gamma=2.0, reduction="none")
+
+    # Class weights [none, ch.had, n.had, gamma, ele, mu]
+    # Moderate, physics-motivated — generalizes to PU/ttbar
+    pid_class_weights = torch.tensor(
+        [1.0, 3.0, 3.0, 2.0, 3.0, 8.0],  # n.had back to 3.0
+        dtype=torch.float32,
+        device=ypred["cls_id_onehot"].device
+    )
+    binary_class_weights = torch.tensor(
+        [1.0, 1.3],  # gentle boost — between 1.0 and 2.0
+        dtype=torch.float32,
+        device=ypred["cls_binary"].device
+    )
+    loss_obj_id = FocalLoss(gamma=2.0, alpha=pid_class_weights, reduction="none")
 
     # msk_pred_particle = torch.unsqueeze((ypred["cls_id"] != 0).to(dtype=torch.float32), dim=-1)
     msk_true_particle = torch.unsqueeze((y["cls_id"] != 0).to(dtype=torch.float32), dim=-1)
@@ -48,7 +61,12 @@ def mlpf_loss(y, ypred, batch):
 
     # binary loss for particle / no-particle classification
     # loss_binary_classification = 10.0 * loss_obj_id(ypred["cls_binary"], (y["cls_id"] != 0).long()).reshape(y["cls_id"].shape)
-    loss_binary_classification = 10.0 * torch.nn.functional.cross_entropy(ypred["cls_binary"], (y["cls_id"] != 0).long(), reduction="none")
+    loss_binary_classification = 10.0 * torch.nn.functional.cross_entropy(
+        ypred["cls_binary"],
+        (y["cls_id"] != 0).long(),
+        weight=binary_class_weights,
+        reduction="none"
+    )
 
     # compare the particle type, only for cases where there was a true particle
     loss_pid_classification = loss_obj_id(ypred["cls_id_onehot"], y["cls_id"]).reshape(y["cls_id"].shape)

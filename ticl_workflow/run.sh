@@ -1,22 +1,28 @@
 #!/bin/bash
-source /cvmfs/sft.cern.ch/lcg/views/LCG_106/x86_64-el9-gcc13-opt/setup.sh
-source /afs/cern.ch/work/m/moanwar/private/mlpf/mlpf_env/bin/activate
+unset PYTHONPATH
 
-cd /afs/cern.ch/work/m/moanwar/private/mlpf/particleflow
+source /cvmfs/sft.cern.ch/lcg/views/LCG_106/x86_64-el9-gcc13-opt/setup.sh
+source /home/moanwar/mlpf/twoD-env/bin/activate
+
+cd /home/moanwar/mlpf/particleflow/
 
 export PYTHONPATH=$(pwd)
 export KERAS_BACKEND=torch
-export TFDS_DATA_DIR=/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/tensorflow_datasets
+export TFDS_DATA_DIR=/cms/data/store/user/moanwar/mlpf_data/mix_part_0pu/tensorflow_datasets
+
+# Limit to single GPU and be conservative with memory
+export CUDA_VISIBLE_DEVICES=0
 
 python mlpf/pipeline.py \
-  --config /afs/cern.ch/work/m/moanwar/private/mlpf/test_workflow/my_training.yaml \
+  --config /home/moanwar/mlpf/particleflow/ticl_workflow/my_training.yaml \
   --data-dir $TFDS_DATA_DIR \
   --prefix MLPF_ticl_test_ \
+  --experiment-dir /cms/data/store/user/moanwar/mlpf_data/experiments/  \
   train \
-  --gpus 0 \
-  --num-steps 10 \
-  --dtype float32 \
+  --gpus 1 \
+  --num-steps 50000 \
+  --dtype bfloat16 \
   --conv-type attention \
-  --attention-type math \
-  --num-convs 1 \
-  --num-workers 1 --prefetch-factor 1
+  --attention-type flash \
+  --num-convs 3 \
+  --num-workers 4 --prefetch-factor 2

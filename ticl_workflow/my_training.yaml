@@ -5,26 +5,26 @@ comet: no          # turn off, no comet account needed
 dataset: cms_ticl
 sort_data: no
 data_dir:
-gpus: 0            # CPU on lxplus
-gpu_batch_multiplier: 1
+gpus: 1            # H100 GPU!
+gpu_batch_multiplier: 128
 load:
 finetune:
-num_steps: 50
+num_steps: 200000
 patience: 10
-val_freq: 25
-checkpoint_freq: 25
+val_freq: 20000
+checkpoint_freq: 20000
 lr: 0.0004
 lr_schedule: cosinedecay
 conv_type: attention
 ntrain:
-ntest: 200
-nvalid: 1800
+ntest: 50000
+nvalid: 50000
 num_workers: 1
 prefetch_factor: 2
 comet_name: particleflow-pt
 comet_offline: False
 comet_step_freq: 10
-dtype: float32     # no bfloat16 on CPU
+dtype: bfloat16     # no bfloat16 on CPU
 pad_to_multiple: 256
 
 model:
@@ -39,7 +39,7 @@ model:
 
   attention:
     conv_type: attention
-    num_convs: 1       # keep small for CPU test
+    num_convs: 3
     dropout_ff: 0.0
     dropout_conv_id_mha: 0.0
     dropout_conv_id_ff: 0.0
@@ -48,7 +48,7 @@ model:
     activation: "elu"
     head_dim: 16
     num_heads: 16
-    attention_type: math   # flash doesn't work on CPU
+    attention_type: flash  # flash works on GPU!
     use_pre_layernorm: True
 
   gnn_lsh:
@@ -72,7 +72,7 @@ optimizer: adamw
 train_dataset:
   cms_ticl:
     physical_nopu:
-      batch_size: 1
+      batch_size: 4
       samples:
         cms_pf_ticl_nopu:
           version: 1.0.0

@@ -57,7 +57,7 @@ class TFDSDataSource:
                         pad_width = ((0, num_to_pad), (0, 0))  # Pad only the first axis
                         ret[key_to_pad] = np.pad(array_to_pad, pad_width, mode="constant", constant_values=0)
 
-        if self.ds.dataset_info.name.startswith("cms_"):
+        if self.ds.dataset_info.name.startswith("cms_") and not self.ds.dataset_info.name.startswith("cms_pf_ticl"):
             # track, target label neutral hadron -> reconstruct as charged hadron
             ret["ytarget"][:, 0][(ret["X"][:, 0] == 1) & (ret["ytarget"][:, 0] == 2)] = 1
 
