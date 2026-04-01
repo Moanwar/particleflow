@@ -17,7 +17,7 @@ CLASS_NAMES_TICL = ["none", "ch.had", "n.had", "gamma", "ele", "mu"]
 X_FEATURES = [
     "typ_idx",
     "pt", "eta", "sin_phi", "cos_phi", "energy",
-    "charge", "px", "py", "pz",
+    "charge", "px", "py", "pz","em_energy", "bary_z", "nhits",
 ]
 
 Y_FEATURES = [

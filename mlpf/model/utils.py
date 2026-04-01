@@ -119,6 +119,9 @@ X_FEATURES = {
         "px",
         "py",
         "pz",
+        "em_energy",
+        "bary_z",
+        "nhits",
     ],
     "clic": [
         "type",

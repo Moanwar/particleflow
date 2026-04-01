@@ -4,11 +4,11 @@
 #tfds build particleGun_nopu_phase2.py --manual_dir=/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files  --config=1
 
 # Set where TFDS goes
-export TFDS_DATA_DIR=/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/tensorflow_datasets
+export TFDS_DATA_DIR=/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/tensorflow_datasets_v2
 
 # Build all 10 splits from whatever PKL files exist in the directory
 for config in 1 2 3 4 5 6 7 8 9 10; do
     tfds build ticl_nopu.py \
-        --manual_dir=/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files \
+        --manual_dir=/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files_v2 \
         --config=$config
 done

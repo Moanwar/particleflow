@@ -13,6 +13,31 @@ import awkward
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
+"""
+cd /afs/cern.ch/work/m/moanwar/private/mlpf/particleflow/mlpf/data/cms/
+
+not use the SuperClusteringDNN :
+
+python3 postprocessing_ticl.py \
+    --input prtg_mix_0pu_oneEtaSide_1M.txt \
+    --output /eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files_v2/ticl_graph_data_prt.pkl \
+    --events-per-pkl 20000
+
+using the SuperClusteringDNN :
+
+python3 postprocessing_ticl.py \
+    --input prtg_mix_0pu_oneEtaSide_1M.txt \
+    --output /eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files_v2/ticl_graph_data_prt.pkl \
+    --events-per-pkl 20000 \
+    --use-superclustering
+
+quick test :
+ python3 postprocessing_ticl.py \
+    --input prtg_mix_0pu_oneEtaSide_1M.txt \
+    --output tmp/test_no_sc2.pkl \
+    --num-events 100 --max-files 5
+
+"""
 # python3 postprocessing_ticl.py --input 211_0pu.txt --output ticl_graph_data_pion_0pu.pkl
 
 # Prevent threading issues
@@ -33,7 +58,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 #]
 
 elem_branches = [
-    "typ", "pt", "eta", "phi", "energy", "charge","px", "py", "pz",
+    "typ", "pt", "eta", "phi", "energy", "charge","px", "py", "pz","em_energy","bary_z","nhits"
 ]
 
 particle_feature_order = [
@@ -215,13 +240,15 @@ def read_event(trees, iev):
     ev = {}
     sl = dict(entry_start=iev, entry_stop=iev + 1, library="np")
 
-    a = trees['tkst'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt"], **sl)
+    a = trees['tkst'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt" , "raw_em_energy", "barycenter_z"], **sl)
     ev["ts_energy"] = a["raw_energy"][0];  ev["ts_pt"]  = a["raw_pt"][0]
     ev["ts_eta"]    = a["barycenter_eta"][0]; ev["ts_phi"] = a["barycenter_phi"][0]
+    ev["ts_z"]    = a["barycenter_z"][0]; ev["ts_em_energy"] = a["raw_em_energy"][0]
 
-    a = trees['tkstEG'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt"], **sl)
+    a = trees['tkstEG'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt", "raw_em_energy","barycenter_z"], **sl)
     ev["tsEG_energy"] = a["raw_energy"][0];  ev["tsEG_pt"]  = a["raw_pt"][0]
     ev["tsEG_eta"]    = a["barycenter_eta"][0]; ev["tsEG_phi"] = a["barycenter_phi"][0]
+    ev["tsEG_z"]    = a["barycenter_z"][0]; ev["tsEG_em_energy"] = a["raw_em_energy"][0]
 
     a = trees['simtkst'].arrays(
         ["regressed_energy", "barycenter_eta", "barycenter_phi", "pdgID", "trackIdx", "CPidx"], **sl)
@@ -271,12 +298,13 @@ def read_event(trees, iev):
 
     a = trees['track'].arrays(
         ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_charge", "track_id",
-         "track_missing_outer_hits", "track_quality"], **sl)
+         "track_missing_outer_hits", "track_quality", "track_nhits"], **sl)
     ev["track_pt"]      = a["track_pt"][0];   ev["track_p"]       = a["track_p"][0]
     ev["track_eta"]     = a["track_eta"][0];  ev["track_phi"]     = a["track_hgcal_phi"][0]
     ev["track_charge"]  = a["track_charge"][0]; ev["track_id"]    = a["track_id"][0]
     ev["track_hits"]    = a["track_missing_outer_hits"][0]; ev["track_quality"] = a["track_quality"][0]
-
+    ev["track_nhits"]    = a["track_nhits"][0]
+    
     a = trees['assoc'].arrays(
         ["ticlTracksterLinks_recoToSim_CP_score", "ticlTracksterLinks_simToReco_CP_score",
          "ticlTracksterLinks_simToReco_CP_sharedE", "ticlTracksterLinks_recoToSim_CP",
@@ -337,59 +365,112 @@ def collect_hadronic_connections(ev):
     return connections
 
 
-def collect_em_connections(ev):
+def collect_em_connections(ev, use_superclustering=False):
+    """
+    Collect EM trackster connections.
+    
+    use_superclustering=True:  use SuperclusteringDNN (better EM quality)
+                               but creates duplication with ticlTracksterLinks
+    use_superclustering=False: use ticlTracksterLinks for EM as well
+                               (type 2 assigned via CP matching with EM particles)
+                               no duplication, consistent with HAD tracksters
+    """
     connections = []
     n_ts     = len(ev["ts_energy"])
     n_tracks = len(ev["track_pt"])
 
-    r2s_scores  = ev["ticlTracksterLinksDNN_recoToSim_CP_score"]
-    s2r_scores  = ev["ticlTracksterLinksDNN_simToReco_CP_score"]
-    s2r_sharedE = ev["ticlTracksterLinksDNN_simToReco_CP_sharedE"]
-    s2r_index   = ev["ticlTracksterLinksDNN_simToReco_CP"]
+    if use_superclustering:
+        # Use SuperclusteringDNN tracksters (tsEG)
+        r2s_scores  = ev["ticlTracksterLinksDNN_recoToSim_CP_score"]
+        s2r_scores  = ev["ticlTracksterLinksDNN_simToReco_CP_score"]
+        s2r_sharedE = ev["ticlTracksterLinksDNN_simToReco_CP_sharedE"]
+        s2r_index   = ev["ticlTracksterLinksDNN_simToReco_CP"]
 
-    if s2r_sharedE is None or len(s2r_sharedE) == 0:
-        return connections
+        if s2r_sharedE is None or len(s2r_sharedE) == 0:
+            return connections
 
-    simcan_pdgid      = ev["simcan_pdgid"]
-    simcan_raw_energy = ev["simcan_raw_energy"]
-    simcan_reg_energy = ev["simcan_reg_energy"]
-    simcan_eta        = ev["simcan_eta"]
-    tsEG_energy       = ev["tsEG_energy"]
+        simcan_pdgid      = ev["simcan_pdgid"]
+        simcan_raw_energy = ev["simcan_raw_energy"]
+        simcan_reg_energy = ev["simcan_reg_energy"]
+        simcan_eta        = ev["simcan_eta"]
+        tsEG_energy       = ev["tsEG_energy"]
 
-    for sim_idx, (shared_arr, idx_arr) in enumerate(zip(s2r_sharedE, s2r_index)):
-        if len(shared_arr) == 0:
-            continue
-        cp_pid        = simcan_pdgid[sim_idx]
-        abs_pid       = abs(cp_pid)
-
-        # only electrons and photons go to EM tracksters
-        if abs_pid not in (11, 22):
-            continue
-
-        cp_eta        = simcan_eta[sim_idx]
-        # electron: raw energy (track momentum is primary, cluster is secondary)
-        # photon (converted or not): regressed energy is always the better estimate
-        cp_energy = simcan_raw_energy[sim_idx] if abs_pid == 11 else simcan_reg_energy[sim_idx]
-
-        for idx2, (trackster_idx, shared_energy) in enumerate(zip(idx_arr, shared_arr)):
-            if shared_energy <= 0:
+        for sim_idx, (shared_arr, idx_arr) in enumerate(zip(s2r_sharedE, s2r_index)):
+            if len(shared_arr) == 0:
                 continue
-            r_score = r2s_scores[trackster_idx][0] if trackster_idx < len(r2s_scores) and len(r2s_scores[trackster_idx]) > 0 else 1.0
-            s_score = s2r_scores[sim_idx][idx2]    if sim_idx < len(s2r_scores) and idx2 < len(s2r_scores[sim_idx]) else 1.0
-            if r_score > 0.6 or s_score > 0.9:
+            cp_pid  = simcan_pdgid[sim_idx]
+            abs_pid = abs(cp_pid)
+            if abs_pid not in (11, 22):
                 continue
+            cp_eta    = simcan_eta[sim_idx]
+            cp_energy = simcan_raw_energy[sim_idx] if abs_pid == 11                         else simcan_reg_energy[sim_idx]
 
-            connections.append({
-                'cp_idx':        sim_idx,
-                'cp_pid':        cp_pid,
-                'cp_energy':     cp_energy,
-                'cp_eta':        cp_eta,
-                'element_idx':   n_ts + n_tracks + trackster_idx,
-                'element_type':  2,
-                'shared_energy': tsEG_energy[trackster_idx],
-                'element_energy':tsEG_energy[trackster_idx],
-                'is_charged':    is_charged_particle(cp_pid)
-            })
+            for idx2, (trackster_idx, shared_energy) in enumerate(zip(idx_arr, shared_arr)):
+                if shared_energy <= 0:
+                    continue
+                r_score = r2s_scores[trackster_idx][0] if trackster_idx < len(r2s_scores)                           and len(r2s_scores[trackster_idx]) > 0 else 1.0
+                s_score = s2r_scores[sim_idx][idx2] if sim_idx < len(s2r_scores)                           and idx2 < len(s2r_scores[sim_idx]) else 1.0
+                if r_score > 0.6 or s_score > 0.9:
+                    continue
+                connections.append({
+                    'cp_idx':        sim_idx,
+                    'cp_pid':        cp_pid,
+                    'cp_energy':     cp_energy,
+                    'cp_eta':        cp_eta,
+                    'element_idx':   n_ts + n_tracks + trackster_idx,
+                    'element_type':  2,
+                    'shared_energy': tsEG_energy[trackster_idx],
+                    'element_energy':tsEG_energy[trackster_idx],
+                    'is_charged':    is_charged_particle(cp_pid)
+                })
+
+    else:
+        # Use ticlTracksterLinks for EM as well (no duplication)
+        # Type 2 assigned via CP matching — same tracksters as HAD but
+        # those matched to EM CPs (ele/gamma) get type 2
+        r2s_scores  = ev["ticlTracksterLinks_recoToSim_CP_score"]
+        s2r_scores  = ev["ticlTracksterLinks_simToReco_CP_score"]
+        s2r_sharedE = ev["ticlTracksterLinks_simToReco_CP_sharedE"]
+        s2r_index   = ev["ticlTracksterLinks_simToReco_CP"]
+
+        simcan_pdgid      = ev["simcan_pdgid"]
+        simcan_raw_energy = ev["simcan_raw_energy"]
+        simcan_reg_energy = ev["simcan_reg_energy"]
+        simcan_eta        = ev["simcan_eta"]
+        ts_energy         = ev["ts_energy"]
+
+        for sim_idx, (shared_arr, idx_arr) in enumerate(zip(s2r_sharedE, s2r_index)):
+            if len(shared_arr) == 0:
+                continue
+            cp_pid  = simcan_pdgid[sim_idx]
+            abs_pid = abs(cp_pid)
+            # Only EM particles (ele/gamma) → type 2
+            if abs_pid not in (11, 22):
+                continue
+            cp_eta    = simcan_eta[sim_idx]
+            cp_energy = simcan_raw_energy[sim_idx] if abs_pid == 11                         else simcan_reg_energy[sim_idx]
+
+            for idx2, (trackster_idx, shared_energy) in enumerate(zip(idx_arr, shared_arr)):
+                if shared_energy <= 0:
+                    continue
+                r_score = r2s_scores[trackster_idx][0] if trackster_idx < len(r2s_scores)                           and len(r2s_scores[trackster_idx]) > 0 else 1.0
+                s_score = s2r_scores[sim_idx][idx2] if sim_idx < len(s2r_scores)                           and idx2 < len(s2r_scores[sim_idx]) else 1.0
+                if r_score > 0.6 or s_score > 0.9:
+                    continue
+                # element_idx is within ticlTracksterLinks (n_ts space)
+                # type 2 because matched to EM CP
+                connections.append({
+                    'cp_idx':        sim_idx,
+                    'cp_pid':        cp_pid,
+                    'cp_energy':     cp_energy,
+                    'cp_eta':        cp_eta,
+                    'element_idx':   trackster_idx,  # in ts space, NOT tsEG
+                    'element_type':  2,              # still type 2!
+                    'shared_energy': ts_energy[trackster_idx],
+                    'element_energy':ts_energy[trackster_idx],
+                    'is_charged':    is_charged_particle(cp_pid)
+                })
+
     return connections
 
 
@@ -473,9 +554,14 @@ def split_caloparticles(connections, ev):
                 if 0 <= elem_idx < n_ts:
                     elem_eta = ts_eta[elem_idx]
             elif elem_type in (2, 3):
-                ti = elem_idx - (n_ts + n_tracks)
-                if 0 <= ti < n_ts_eg:
-                    elem_eta = tsEG_eta[ti]
+                # Check both ts space (no-superclustering) and tsEG space
+                if elem_idx < n_ts:
+                    # type 2 from ticlTracksterLinks (no-superclustering mode)
+                    elem_eta = ts_eta[elem_idx]
+                else:
+                    ti = elem_idx - (n_ts + n_tracks)
+                    if 0 <= ti < n_ts_eg:
+                        elem_eta = tsEG_eta[ti]
             # type 5 no longer used
             if elem_eta is not None and cp_eta * elem_eta > 0:
                 valid_elements.append(conn)
@@ -675,7 +761,10 @@ def make_graph(ev, iev):
         (("elem", i), dict(
             typ=4, pt=float(ts_pt[i]), energy=float(ts_en[i]),
             eta=float(ts_eta[i]), phi=float(ts_phi[i]), charge=0.0,
-            px=float(_px[i]), py=float(_py[i]), pz=float(_pz[i])
+            px=float(_px[i]), py=float(_py[i]), pz=float(_pz[i]),
+            em_energy=float(ev["ts_em_energy"][i]),
+            bary_z=float(ev["ts_z"][i]),
+            nhits=0.0, 
         ))
         for i in range(n_ts)
     )
@@ -702,7 +791,10 @@ def make_graph(ev, iev):
                 layer=0, charge=float(trk_chg[itrk]),
                 px=float(trk_pt[itrk] * math.cos(trk_phi[itrk])),
                 py=float(trk_pt[itrk] * math.sin(trk_phi[itrk])),
-                pz=float(_pz_trk[itrk])
+                pz=float(_pz_trk[itrk]),
+                em_energy=0.0,
+                bary_z=0.0,
+                nhits=float(ev["track_nhits"][itrk]),
             )
         ))
     g.add_nodes_from(track_nodes)
@@ -718,7 +810,10 @@ def make_graph(ev, iev):
         (("elem", n_ts + n_tracks + i), dict(
             typ=2, pt=float(eg_pt[i]), energy=float(eg_en[i]),
             eta=float(eg_eta[i]), phi=float(eg_phi[i]), charge=0.0,
-            px=float(_px_eg[i]), py=float(_py_eg[i]), pz=float(_pz_eg[i])
+            px=float(_px_eg[i]), py=float(_py_eg[i]), pz=float(_pz_eg[i]),
+            em_energy=float(ev["tsEG_em_energy"][i]),
+            bary_z=float(ev["tsEG_z"][i]),
+            nhits=0.0, 
         ))
         for i in range(n_ts_eg)
     )
@@ -1121,6 +1216,11 @@ def main():
                         help='Parallel worker processes (default: #CPUs-1)')
     parser.add_argument('--events-per-pkl',  type=int, default=-1,
                         help='Split output into multiple PKLs with this many events each (-1 = single file)')
+    parser.add_argument('--use-superclustering',
+                        dest='use_superclustering',
+                        action='store_true',
+                        default=False,
+                        help='Use SuperclusteringDNN for EM tracksters (default: False, uses ticlTracksterLinks)')
     args = parser.parse_args()
 
     if not os.path.exists(args.input):

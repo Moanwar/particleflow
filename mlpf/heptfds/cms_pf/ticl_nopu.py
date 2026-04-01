@@ -62,13 +62,13 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
         import pickle
         
         # Get paths from environment variables with defaults
-        input_dir = os.environ.get("INPUT_DIR", "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files/")
-        output_base = os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/processed/")
+        input_dir=os.environ.get("INPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files_v2/")
+        output_base=os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/processed_v2/")
         
         # Construct full paths
-        input_pkl = os.path.join(input_dir, "ticl_graph_data_prt.pkl")
-        split_output_dir = pathlib.Path(output_base) / "ticl_particleGun_0pu"
-        split_output_dir.mkdir(parents=True, exist_ok=True)
+        #input_pkl = os.path.join(input_dir, "ticl_graph_data_prt.pkl")
+        #split_output_dir = pathlib.Path(output_base) / "ticl_particleGun_0pu"
+        #split_output_dir.mkdir(parents=True, exist_ok=True)
         
         #print("="*50)
         #print("PATH CONFIGURATION:")
@@ -80,9 +80,20 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
         #print("="*50)
         
         # Check if input file exists
-        if not os.path.exists(input_pkl):
-            raise FileNotFoundError(f"Input file not found: {input_pkl}")
+        #if not os.path.exists(input_pkl):
+        #    raise FileNotFoundError(f"Input file not found: {input_pkl}")
+
+        # Use input_dir directly (contains all PKLs)
+        input_path = pathlib.Path(input_dir)
+
+        print(f"Using PKL files directly from: {input_path}")
         
+        return cms_utils_phase2.split_sample(
+            input_path,
+            self.builder_config,
+            num_splits=cms_utils_phase2.NUM_SPLITS
+        )
+
         # Split only if not already done
         existing = sorted(split_output_dir.glob("*.pkl"))
         if not existing:
