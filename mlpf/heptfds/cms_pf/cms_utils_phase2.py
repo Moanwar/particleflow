@@ -56,26 +56,30 @@ def prepare_data_ticl(fn):
         Xelem["sin_phi"] = np.sin(Xelem["phi"])
         Xelem["cos_phi"] = np.cos(Xelem["phi"])
 
-        # Map typ to index
-        Xelem["typ_idx"] = np.array(
-            [ELEM_LABELS_TICL.index(int(i)) if int(i) in ELEM_LABELS_TICL else 0
-             for i in Xelem["typ"]], dtype=np.float32)
+        # Map typ to index — vectorized
+        typ_arr = ak.to_numpy(Xelem["typ"]).astype(int)
+        typ_map = np.zeros(max(ELEM_LABELS_TICL)+1, dtype=np.float32)
+        for idx, label in enumerate(ELEM_LABELS_TICL):
+            typ_map[label] = idx
+        Xelem["typ_idx"] = typ_map[np.clip(typ_arr, 0, len(typ_map)-1)]
 
         # Add generatorStatus as zeros (not available in TICL data)
         ytarget["generatorStatus"] = np.zeros(len(ytarget), dtype=np.float32)
         ycand["generatorStatus"]   = np.zeros(len(ycand),   dtype=np.float32)
 
-        # Map pid to class index for ytarget
-        pids_remapped = [map_pdgid_to_candid(abs(int(pid)), q)
-                         for pid, q in zip(ytarget["pid"], ytarget["charge"])]
-        ytarget["typ_idx"] = np.array(
-            [CLASS_LABELS_TICL.index(pid) if pid in CLASS_LABELS_TICL else 0
-             for pid in pids_remapped], dtype=np.float32)
+        # Map pid to class index — vectorized
+        cls_map = {pid: idx for idx, pid in enumerate(CLASS_LABELS_TICL)}
 
-        # Map pid to class index for ycand
+        pids = ak.to_numpy(ytarget["pid"]).astype(int)
+        charges = ak.to_numpy(ytarget["charge"])
+        pids_remapped = np.array([map_pdgid_to_candid(abs(int(p)), q)
+                                  for p, q in zip(pids, charges)], dtype=int)
+        ytarget["typ_idx"] = np.array(
+            [cls_map.get(p, 0) for p in pids_remapped], dtype=np.float32)
+
+        cpids = np.abs(ak.to_numpy(ycand["pid"]).astype(int))
         ycand["typ_idx"] = np.array(
-            [CLASS_LABELS_TICL.index(abs(int(i))) if abs(int(i)) in CLASS_LABELS_TICL else 0
-             for i in ycand["pid"]], dtype=np.float32)
+            [cls_map.get(p, 0) for p in cpids], dtype=np.float32)
 
         Xelem_flat   = ak.to_numpy(np.stack([Xelem[k]   for k in X_FEATURES], axis=-1))
         ytarget_flat = ak.to_numpy(np.stack([ytarget[k] for k in Y_FEATURES], axis=-1))
