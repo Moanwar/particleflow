@@ -122,6 +122,9 @@ X_FEATURES = {
         "em_energy",
         "bary_z",
         "nhits",
+        "min_dR_track",   # NEW
+        "near_track_pt",  # NEW
+        "shower_depth",   # NEW
     ],
     "clic": [
         "type",
