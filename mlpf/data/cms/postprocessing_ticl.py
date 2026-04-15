@@ -58,7 +58,12 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 #]
 
 elem_branches = [
-    "typ", "pt", "eta", "phi", "energy", "charge","px", "py", "pz","em_energy","bary_z","nhits"
+    "typ", "pt", "eta", "phi", "energy", "charge", "px", "py", "pz",
+    "em_energy", "bary_z", "nhits",
+    "min_dR_track",    # min dR to nearest good track at HGCAL
+    "near_track_pt",   # pT of nearest track (0 if none)
+    "shower_depth",    # energy-weighted shower depth Σ(|z|×E)/Σ(E)
+    "sum_pt_dR10",     # NEW: sum of track pT within dR<0.10
 ]
 
 particle_feature_order = [
@@ -240,10 +245,13 @@ def read_event(trees, iev):
     ev = {}
     sl = dict(entry_start=iev, entry_stop=iev + 1, library="np")
 
-    a = trees['tkst'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt" , "raw_em_energy", "barycenter_z"], **sl)
-    ev["ts_energy"] = a["raw_energy"][0];  ev["ts_pt"]  = a["raw_pt"][0]
-    ev["ts_eta"]    = a["barycenter_eta"][0]; ev["ts_phi"] = a["barycenter_phi"][0]
-    ev["ts_z"]    = a["barycenter_z"][0]; ev["ts_em_energy"] = a["raw_em_energy"][0]
+    a = trees['tkst'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt",
+                              "raw_em_energy", "barycenter_z",
+                              "vertices_z", "vertices_energy"], **sl)
+    ev["ts_energy"]    = a["raw_energy"][0];    ev["ts_pt"]       = a["raw_pt"][0]
+    ev["ts_eta"]       = a["barycenter_eta"][0]; ev["ts_phi"]      = a["barycenter_phi"][0]
+    ev["ts_z"]         = a["barycenter_z"][0];  ev["ts_em_energy"]= a["raw_em_energy"][0]
+    ev["ts_vertices_z"]= a["vertices_z"][0];    ev["ts_vertices_e"]= a["vertices_energy"][0]
 
     a = trees['tkstEG'].arrays(["raw_energy", "barycenter_eta", "barycenter_phi", "raw_pt", "raw_em_energy","barycenter_z"], **sl)
     ev["tsEG_energy"] = a["raw_energy"][0];  ev["tsEG_pt"]  = a["raw_pt"][0]
@@ -297,12 +305,16 @@ def read_event(trees, iev):
     ev["genpar_energy"]           = a["GenPart_energy"][0]
 
     a = trees['track'].arrays(
-        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_charge", "track_id",
-         "track_missing_outer_hits", "track_quality", "track_nhits"], **sl)
-    ev["track_pt"]      = a["track_pt"][0];   ev["track_p"]       = a["track_p"][0]
-    ev["track_eta"]     = a["track_eta"][0];  ev["track_phi"]     = a["track_hgcal_phi"][0]
-    ev["track_charge"]  = a["track_charge"][0]; ev["track_id"]    = a["track_id"][0]
-    ev["track_hits"]    = a["track_missing_outer_hits"][0]; ev["track_quality"] = a["track_quality"][0]
+        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_hgcal_eta",
+         "track_charge", "track_id", "track_missing_outer_hits", 
+         "track_quality", "track_nhits"], **sl)
+    ev["track_pt"]       = a["track_pt"][0];   ev["track_p"]       = a["track_p"][0]
+    ev["track_eta"]      = a["track_eta"][0];  ev["track_phi"]     = a["track_hgcal_phi"][0]
+    ev["track_hgcal_eta"]= a["track_hgcal_eta"][0]
+    ev["track_hgcal_phi"]= a["track_hgcal_phi"][0]
+    ev["track_charge"]   = a["track_charge"][0]; ev["track_id"]    = a["track_id"][0]
+    ev["track_hits"]     = a["track_missing_outer_hits"][0]
+    ev["track_quality"]  = a["track_quality"][0]
     ev["track_nhits"]    = a["track_nhits"][0]
     
     a = trees['assoc'].arrays(
@@ -328,6 +340,152 @@ def read_event(trees, iev):
     return ev
 
 
+def read_all_events(trees, start_event=0, num_events=-1):
+    """
+    Read ALL events at once per file — much faster than per-event reading.
+    Returns a list of event dicts, same format as read_event().
+    """
+    total = trees['tkst'].num_entries
+    if num_events == -1:
+        num_events = total - start_event
+    else:
+        num_events = min(num_events, total - start_event)
+    
+    sl = dict(entry_start=start_event, 
+              entry_stop=start_event + num_events, 
+              library="np")
+
+    # Read ALL events in one shot per tree
+    a_tkst = trees['tkst'].arrays(
+        ["raw_energy", "barycenter_eta", "barycenter_phi", 
+         "raw_pt", "raw_em_energy", "barycenter_z",
+         "vertices_z", "vertices_energy"], **sl)
+    
+    a_tkstEG = trees['tkstEG'].arrays(
+        ["raw_energy", "barycenter_eta", "barycenter_phi", 
+         "raw_pt", "raw_em_energy", "barycenter_z"], **sl)
+    
+    a_simtkst = trees['simtkst'].arrays(
+        ["regressed_energy", "barycenter_eta", "barycenter_phi", 
+         "pdgID", "trackIdx", "CPidx"], **sl)
+    
+    a_cand = trees['cand'].arrays(
+        ["candidate_pt", "candidate_eta", "candidate_phi", 
+         "candidate_energy", "trackstersLinks_in_candidate", 
+         "candidate_pdgId", "track_in_candidate"], **sl)
+    
+    a_simcan = trees['simcan'].arrays(
+        ["simTICLCandidate_pdgId", "simTICLCandidate_pt",
+         "simTICLCandidate_eta", "simTICLCandidate_phi",
+         "simTICLCandidate_regressed_energy", "simTICLCandidate_raw_energy",
+         "simTICLCandidate_tracks_in_candidate",
+         "simTICLCandidate_simTracksterCPIndex",
+         "simTICLCandidate_ispu"], **sl)
+    
+    a_genpar = trees['genpar'].arrays(
+        ["GenPart_status", "GenPart_genPartIdxMother", "GenPart_eta",
+         "GenPart_phi", "GenPart_pdgId", "GenPart_mass", 
+         "GenPart_pt", "GenPart_energy"], **sl)
+    
+    a_track = trees['track'].arrays(
+        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_hgcal_eta",
+         "track_charge", "track_id", "track_missing_outer_hits",
+         "track_quality", "track_nhits"], **sl)
+    a_assoc = trees['assoc'].arrays(
+        ["ticlTracksterLinks_recoToSim_CP_score",
+         "ticlTracksterLinks_simToReco_CP_score",
+         "ticlTracksterLinks_simToReco_CP_sharedE",
+         "ticlTracksterLinks_recoToSim_CP",
+         "ticlTracksterLinks_simToReco_CP",
+         "ticlTracksterLinksSuperclusteringDNN_simToReco_CP",
+         "ticlTracksterLinksSuperclusteringDNN_simToReco_CP_score",
+         "ticlTracksterLinksSuperclusteringDNN_simToReco_CP_sharedE",
+         "ticlTracksterLinksSuperclusteringDNN_recoToSim_CP",
+         "ticlTracksterLinksSuperclusteringDNN_recoToSim_CP_score"], **sl)
+
+    # Build per-event dicts
+    events = []
+    for i in range(num_events):
+        ev = {}
+        ev["ts_energy"]      = a_tkst["raw_energy"][i]
+        ev["ts_pt"]          = a_tkst["raw_pt"][i]
+        ev["ts_eta"]         = a_tkst["barycenter_eta"][i]
+        ev["ts_phi"]         = a_tkst["barycenter_phi"][i]
+        ev["ts_z"]           = a_tkst["barycenter_z"][i]
+        ev["ts_vertices_z"]  = a_tkst["vertices_z"][i]
+        ev["ts_vertices_e"]  = a_tkst["vertices_energy"][i]
+        ev["ts_em_energy"]   = a_tkst["raw_em_energy"][i]
+        ev["ts_vertices_z"]  = a_tkst["vertices_z"][i]
+        ev["ts_vertices_e"]  = a_tkst["vertices_energy"][i]
+
+        ev["tsEG_energy"]    = a_tkstEG["raw_energy"][i]
+        ev["tsEG_pt"]        = a_tkstEG["raw_pt"][i]
+        ev["tsEG_eta"]       = a_tkstEG["barycenter_eta"][i]
+        ev["tsEG_phi"]       = a_tkstEG["barycenter_phi"][i]
+        ev["tsEG_z"]         = a_tkstEG["barycenter_z"][i]
+        ev["tsEG_em_energy"] = a_tkstEG["raw_em_energy"][i]
+
+        ev["simtkst_energy"]   = a_simtkst["regressed_energy"][i]
+        ev["simtkst_eta"]      = a_simtkst["barycenter_eta"][i]
+        ev["simtkst_phi"]      = a_simtkst["barycenter_phi"][i]
+        ev["simtkst_pdgid"]    = a_simtkst["pdgID"][i]
+        ev["simtkst_trackIdx"] = a_simtkst["trackIdx"][i]
+        ev["simtkst_CPidx"]    = a_simtkst["CPidx"][i]
+
+        ev["tcan_pt"]         = a_cand["candidate_pt"][i]
+        ev["tcan_eta"]        = a_cand["candidate_eta"][i]
+        ev["tcan_phi"]        = a_cand["candidate_phi"][i]
+        ev["tcan_energy"]     = a_cand["candidate_energy"][i]
+        ev["trkst_indcies"]   = a_cand["trackstersLinks_in_candidate"][i]
+        ev["trks_indcies"]    = a_cand["track_in_candidate"][i]
+        ev["candidate_pdgId"] = a_cand["candidate_pdgId"][i]
+
+        ev["simcan_pdgid"]               = a_simcan["simTICLCandidate_pdgId"][i]
+        ev["simcan_pt"]                  = a_simcan["simTICLCandidate_pt"][i]
+        ev["simcan_eta"]                 = a_simcan["simTICLCandidate_eta"][i]
+        ev["simcan_phi"]                 = a_simcan["simTICLCandidate_phi"][i]
+        ev["simcan_reg_energy"]          = a_simcan["simTICLCandidate_regressed_energy"][i]
+        ev["simcan_raw_energy"]          = a_simcan["simTICLCandidate_raw_energy"][i]
+        ev["simcan_trkId"]               = a_simcan["simTICLCandidate_tracks_in_candidate"][i]
+        ev["simcan_simTracksterCPIndex"] = a_simcan["simTICLCandidate_simTracksterCPIndex"][i]
+        ev["simcan_ispu"]                = a_simcan["simTICLCandidate_ispu"][i]
+
+        ev["genpar_pdgid"]            = a_genpar["GenPart_pdgId"][i]
+        ev["genpar_mass"]             = a_genpar["GenPart_mass"][i]
+        ev["genpar_eta"]              = a_genpar["GenPart_eta"][i]
+        ev["genpar_phi"]              = a_genpar["GenPart_phi"][i]
+        ev["genpar_status"]           = a_genpar["GenPart_status"][i]
+        ev["genpar_genPartIdxMother"] = a_genpar["GenPart_genPartIdxMother"][i]
+        ev["genpar_pt"]               = a_genpar["GenPart_pt"][i]
+        ev["genpar_energy"]           = a_genpar["GenPart_energy"][i]
+
+        ev["track_pt"]      = a_track["track_pt"][i]
+        ev["track_p"]       = a_track["track_p"][i]
+        ev["track_eta"]     = a_track["track_eta"][i]
+        ev["track_phi"]     = a_track["track_hgcal_phi"][i]
+        ev["track_charge"]  = a_track["track_charge"][i]
+        ev["track_id"]      = a_track["track_id"][i]
+        ev["track_hits"]    = a_track["track_missing_outer_hits"][i]
+        ev["track_quality"] = a_track["track_quality"][i]
+        ev["track_nhits"]   = a_track["track_nhits"][i]
+        ev["track_hgcal_eta"] = a_track["track_hgcal_eta"][i]
+        ev["track_hgcal_phi"] = a_track["track_hgcal_phi"][i]
+
+        ev["ticlTracksterLinks_recoToSim_CP_score"]   = a_assoc["ticlTracksterLinks_recoToSim_CP_score"][i]
+        ev["ticlTracksterLinks_simToReco_CP_score"]   = a_assoc["ticlTracksterLinks_simToReco_CP_score"][i]
+        ev["ticlTracksterLinks_simToReco_CP_sharedE"] = a_assoc["ticlTracksterLinks_simToReco_CP_sharedE"][i]
+        ev["ticlTracksterLinks_recoToSim_CP"]         = a_assoc["ticlTracksterLinks_recoToSim_CP"][i]
+        ev["ticlTracksterLinks_simToReco_CP"]         = a_assoc["ticlTracksterLinks_simToReco_CP"][i]
+        ev["ticlTracksterLinksDNN_recoToSim_CP_score"]   = a_assoc["ticlTracksterLinksSuperclusteringDNN_recoToSim_CP_score"][i]
+        ev["ticlTracksterLinksDNN_simToReco_CP_score"]   = a_assoc["ticlTracksterLinksSuperclusteringDNN_simToReco_CP_score"][i]
+        ev["ticlTracksterLinksDNN_simToReco_CP_sharedE"] = a_assoc["ticlTracksterLinksSuperclusteringDNN_simToReco_CP_sharedE"][i]
+        ev["ticlTracksterLinksDNN_recoToSim_CP"]         = a_assoc["ticlTracksterLinksSuperclusteringDNN_recoToSim_CP"][i]
+        ev["ticlTracksterLinksDNN_simToReco_CP"]         = a_assoc["ticlTracksterLinksSuperclusteringDNN_simToReco_CP"][i]
+
+        events.append(ev)
+    return events, num_events
+
+
 # Connection collectors
 def collect_hadronic_connections(ev):
     connections = []
@@ -340,7 +498,69 @@ def collect_hadronic_connections(ev):
     simcan_pdgid  = ev["simcan_pdgid"]
     simcan_eta    = ev["simcan_eta"]
     ts_energy     = ev["ts_energy"]
+    '''
+    for sim_idx, (shared_arr, idx_arr) in enumerate(zip(s2r_sharedE, s2r_index)):
+        if len(shared_arr) == 0:
+            continue
 
+        cp_energy = simcan_energy[sim_idx]
+        cp_pid    = simcan_pdgid[sim_idx]
+
+        if abs(cp_pid) in [11, 22]:
+            continue
+
+        cp_eta = simcan_eta[sim_idx]
+
+        best_candidate = None
+        best_s_score = float("inf")
+        best_r_score = float("inf")
+
+        for idx2, (trackster_idx, shared_energy) in enumerate(zip(idx_arr, shared_arr)):
+            if shared_energy <= 0:
+                continue
+
+            r_score = (
+                r2s_scores[trackster_idx][0]
+                if trackster_idx < len(r2s_scores) and len(r2s_scores[trackster_idx]) > 0
+                else 1.0
+            )
+
+            s_score = (
+                s2r_scores[sim_idx][idx2]
+                if sim_idx < len(s2r_scores) and idx2 < len(s2r_scores[sim_idx])
+                else 1.0
+            )
+            
+            # Keep cuts ONLY for charged
+            #if cp_pid in [211, 321]:  # charged hadrons
+            #    if r_score > 0.6 or s_score > 0.9:
+            #        continue
+
+            if (s_score < best_s_score) or (
+                    s_score == best_s_score and r_score < best_r_score
+            ):
+                best_s_score = s_score
+                best_r_score = r_score
+                best_candidate = (trackster_idx, shared_energy)
+
+        # Keep only best match
+        if best_candidate is not None:
+            trackster_idx, shared_energy = best_candidate
+
+            connections.append({
+                'cp_idx': sim_idx,
+                'cp_pid': cp_pid,
+                'cp_energy': cp_energy,
+                'cp_eta': cp_eta,
+                'element_idx': trackster_idx,
+                'element_type': 4,
+                'shared_energy': ts_energy[trackster_idx],
+                'element_energy': ts_energy[trackster_idx],
+                'is_charged': is_charged_particle(cp_pid)
+            })
+            
+    return connections
+    '''
     for sim_idx, (shared_arr, idx_arr) in enumerate(zip(s2r_sharedE, s2r_index)):
         if len(shared_arr) == 0:
             continue
@@ -354,8 +574,12 @@ def collect_hadronic_connections(ev):
                 continue
             r_score = r2s_scores[trackster_idx][0] if trackster_idx < len(r2s_scores) and len(r2s_scores[trackster_idx]) > 0 else 1.0
             s_score = s2r_scores[sim_idx][idx2]    if sim_idx < len(s2r_scores) and idx2 < len(s2r_scores[sim_idx]) else 1.0
-            if r_score > 0.6 or s_score > 0.9:
-                continue
+            if cp_pid in [211, 321]:  # charged hadrons                                                                        
+                if r_score > 0.6 or s_score > 0.9:
+                    continue
+            elif cp_pid in [130, 310]:  # neutral hadrons                                                                      
+                if r_score > 0.6 or s_score > 0.9:
+                    continue
             connections.append({
                 'cp_idx': sim_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
                 'cp_eta': cp_eta, 'element_idx': trackster_idx, 'element_type': 4,
@@ -465,7 +689,7 @@ def collect_em_connections(ev, use_superclustering=False):
                     'cp_energy':     cp_energy,
                     'cp_eta':        cp_eta,
                     'element_idx':   trackster_idx,  # in ts space, NOT tsEG
-                    'element_type':  2,              # still type 2!
+                    'element_type':  2,              # type 2!
                     'shared_energy': ts_energy[trackster_idx],
                     'element_energy':ts_energy[trackster_idx],
                     'is_charged':    is_charged_particle(cp_pid)
@@ -739,7 +963,76 @@ def split_caloparticles(connections, ev):
     return split_cps
 
 
-def make_graph(ev, iev):
+def compute_trackster_features(ev):
+    """
+    Compute new RECO-level features for tracksters:
+    1. min_dR to nearest good track at HGCAL entrance
+    2. nearest track pT
+    3. shower depth = Σ(|z|×E) / Σ(E) from layer clusters
+    All features are RECO-level — no truth leakage.
+    """
+    # Good quality tracks only (PU-robust)
+    trk_pt   = ev["track_pt"]
+    trk_qual = ev["track_quality"]
+    good     = (trk_pt >= 1) & (trk_qual >= 1)
+    
+    tk_eta = ev["track_hgcal_eta"][good]
+    tk_phi = ev["track_hgcal_phi"][good]
+    tk_pt  = trk_pt[good]
+
+    def get_min_dR(ts_eta, ts_phi):
+        if len(tk_eta) == 0:
+            return 99.0, 0.0
+        deta = tk_eta - ts_eta
+        dphi = np.arctan2(np.sin(tk_phi - ts_phi),
+                          np.cos(tk_phi - ts_phi))
+        dR   = np.sqrt(deta**2 + dphi**2)
+        idx  = np.argmin(dR)
+        return float(dR[idx]), float(tk_pt[idx])
+
+    n_ts = len(ev["ts_energy"])
+    ts_min_dR  = np.zeros(n_ts)
+    ts_near_pt = np.zeros(n_ts)
+    ts_depth   = np.zeros(n_ts)
+
+    for i in range(n_ts):
+        # min dR to track
+        ts_min_dR[i], ts_near_pt[i] = get_min_dR(
+            float(ev["ts_eta"][i]), float(ev["ts_phi"][i]))
+        
+        # shower depth from layer clusters
+        try:
+            vz_raw = ev["ts_vertices_z"][i]
+            ve_raw = ev["ts_vertices_e"][i]
+            # Handle awkward/STLVector jagged arrays
+            import awkward as ak
+            vz = np.abs(np.array(ak.to_numpy(ak.flatten(ak.Array([vz_raw])))))
+            ve = np.array(ak.to_numpy(ak.flatten(ak.Array([ve_raw]))))
+            if len(vz) > 0 and ve.sum() > 0:
+                ts_depth[i] = float(np.sum(vz * ve) / np.sum(ve))
+            else:
+                ts_depth[i] = float(np.abs(ev["ts_z"][i]))
+        except Exception:
+            ts_depth[i] = float(np.abs(ev["ts_z"][i]))
+
+    # Feature 4: sum of track pT within dR < 0.10
+    # n.had: ~0 (no tracks nearby)
+    # none-chHAD: high (charged hadron track inside)
+    ts_sum_pt10 = np.zeros(n_ts)
+    for i in range(n_ts):
+        ts_eta_i = float(ev["ts_eta"][i])
+        ts_phi_i = float(ev["ts_phi"][i])
+        if len(tk_eta) > 0:
+            deta = tk_eta - ts_eta_i
+            dphi = np.arctan2(np.sin(tk_phi - ts_phi_i),
+                              np.cos(tk_phi - ts_phi_i))
+            dR   = np.sqrt(deta**2 + dphi**2)
+            ts_sum_pt10[i] = float(np.sum(tk_pt[dR < 0.10]))
+
+    return ts_min_dR, ts_near_pt, ts_depth, ts_sum_pt10
+
+
+def make_graph(ev, iev, use_superclustering=False):
     g = nx.DiGraph()
 
     n_ts     = len(ev["ts_energy"])
@@ -749,6 +1042,9 @@ def make_graph(ev, iev):
     track_id_to_idx        = {tid: i for i, tid in enumerate(ev["track_id"])}
     # No truth-based type assignment for tracks - all tracks are type 1
     # The model learns to distinguish muons/electrons/hadrons from kinematics
+
+    # Compute new RECO features for tracksters
+    ts_min_dR, ts_near_pt, ts_depth, ts_sum_pt10 = compute_trackster_features(ev)
 
     ts_eta = ev["ts_eta"]; ts_phi = ev["ts_phi"]
     ts_pt  = ev["ts_pt"];  ts_en  = ev["ts_energy"]
@@ -764,7 +1060,12 @@ def make_graph(ev, iev):
             px=float(_px[i]), py=float(_py[i]), pz=float(_pz[i]),
             em_energy=float(ev["ts_em_energy"][i]),
             bary_z=float(ev["ts_z"][i]),
-            nhits=0.0, 
+            nhits=0.0,
+            min_dR_track=float(ts_min_dR[i]),      # min dR to nearest track
+            near_track_pt=float(ts_near_pt[i]),    # pT of nearest track
+            shower_depth=float(ts_depth[i]),        # energy-weighted depth
+            sum_pt_dR10=float(ts_sum_pt10[i]),     # sum track pT in dR<0.10
+            isolation=float(ts_min_dR[i] * float(ts_en[i])),  # NEW: min_dR × energy
         ))
         for i in range(n_ts)
     )
@@ -806,23 +1107,34 @@ def make_graph(ev, iev):
     _py_eg    = eg_pt * np.sin(eg_phi)
     _pz_eg    = eg_en * np.cos(_theta_eg)
 
-    g.add_nodes_from(
-        (("elem", n_ts + n_tracks + i), dict(
-            typ=2, pt=float(eg_pt[i]), energy=float(eg_en[i]),
-            eta=float(eg_eta[i]), phi=float(eg_phi[i]), charge=0.0,
-            px=float(_px_eg[i]), py=float(_py_eg[i]), pz=float(_pz_eg[i]),
-            em_energy=float(ev["tsEG_em_energy"][i]),
-            bary_z=float(ev["tsEG_z"][i]),
-            nhits=0.0, 
-        ))
-        for i in range(n_ts_eg)
-    )
+    if use_superclustering:
+        g.add_nodes_from(
+            (("elem", n_ts + n_tracks + i), dict(
+                typ=2, pt=float(eg_pt[i]), energy=float(eg_en[i]),
+                eta=float(eg_eta[i]), phi=float(eg_phi[i]), charge=0.0,
+                px=float(_px_eg[i]), py=float(_py_eg[i]), pz=float(_pz_eg[i]),
+                em_energy=float(ev["tsEG_em_energy"][i]),
+                bary_z=float(ev["tsEG_z"][i]),
+                nhits=0.0,
+            ))
+            for i in range(n_ts_eg)
+        )
 
 
+    em_connections  = collect_em_connections(ev, use_superclustering=use_superclustering)
     all_connections = (collect_hadronic_connections(ev) +
-                       collect_em_connections(ev) +
+                       em_connections +
                        collect_track_connections(ev))
     split_cps = split_caloparticles(all_connections, ev)
+
+    # Relabel ts nodes matched to EM CPs from type 4 to type 2
+    # This ensures gamma/ele targets go to type 2 elements
+    if not use_superclustering:
+        em_ts_indices = set(conn["element_idx"] for conn in em_connections)
+        for ts_idx in em_ts_indices:
+            node_id = ("elem", ts_idx)
+            if node_id in g.nodes:
+                g.nodes[node_id]["typ"] = 2
 
     cp_totals = defaultdict(lambda: {'track': 0.0, 'cluster': 0.0})
     for sc in split_cps:
@@ -1069,11 +1381,11 @@ def prepare_normalized_table(g):
 
 
 def _process_file_worker(args):
-    input_file, num_events, start_event = args
-    return process_file_no_progress(input_file, num_events, start_event)
+    input_file, num_events, start_event, use_superclustering = args
+    return process_file_no_progress(input_file, num_events, start_event, use_superclustering=use_superclustering)
 
 
-def process_file_no_progress(input_file, num_events=-1, start_event=0):
+def process_file_no_progress(input_file, num_events=-1, start_event=0, use_superclustering=False):
     tf = uproot.open(input_file)
     trees = {}
     tree_names = {
@@ -1102,15 +1414,19 @@ def process_file_no_progress(input_file, num_events=-1, start_event=0):
     all_data = []
     pt_min   = 3.0
 
-    for iev in range(start_event, start_event + num_events):
+
+    # Batch read ALL events at once — much faster than per-event reading
+    all_events, num_events = read_all_events(trees, start_event, num_events)
+    pt_min = 3.0
+
+    for iev, ev in enumerate(all_events):
         try:
-            ev    = read_event(trees, iev)
-            g     = make_graph(ev, iev)
+            g     = make_graph(ev, iev, use_superclustering=use_superclustering)
             Xelem, ycand, ytarget = prepare_normalized_table(g)
 
             truth_jets  = compute_truth_jets(g, pt_min=pt_min)
             targetjets  = compute_target_jets(ytarget, pt_min=pt_min)
-            genmet      = compute_genmet(g)      # now correctly uses neutrino pT
+            genmet      = compute_genmet(g)
             ytarget_ji  = assign_jet_indices(ytarget, targetjets, pt_min=pt_min)
 
             stable_gen = []
@@ -1134,20 +1450,20 @@ def process_file_no_progress(input_file, num_events=-1, start_event=0):
                 "ytarget":          ytarget_ji,
                 "genjet":           truth_jets,
                 "targetjet":        targetjets,
-                "genmet":           genmet,       # shape (2,): [met_magnitude, met_phi]
+                "genmet":           genmet,
                 "pythia":           stable_gen_array,
-                "event_idx":        iev,
+                "event_idx":        start_event + iev,
                 "file_name":        os.path.basename(input_file),
                 "global_event_idx": len(all_data)
             })
         except Exception as e:
-            print(f"\nERROR event {iev} in {input_file}: {e}")
+            print(f"\nERROR event {start_event + iev} in {input_file}: {e}")
             traceback.print_exc()
     return all_data
 
 
 def process_files(input_list, output_file, num_events=-1, events_per_file=-1,
-                  num_workers=None, events_per_pkl=-1):
+                  num_workers=None, events_per_pkl=-1, use_superclustering=False):
     input_list = [f.strip() for f in input_list if f.strip() and not f.startswith('#')]
 
     if num_workers is None:
@@ -1164,7 +1480,7 @@ def process_files(input_list, output_file, num_events=-1, events_per_file=-1,
             n = remaining
         else:
             n = -1
-        tasks.append((f, n, 0))
+        tasks.append((f, n, 0, use_superclustering))
         if num_events > 0:
             remaining -= (n if n > 0 else 9999999)
 
@@ -1244,7 +1560,8 @@ def main():
 
     all_data, chunk_idx = process_files(input_files, args.output,
                              args.num_events, args.events_per_file,
-                             args.num_workers, args.events_per_pkl)
+                             args.num_workers, args.events_per_pkl,
+                             use_superclustering=args.use_superclustering)
 
     if not all_data and chunk_idx == 0:
         print("ERROR: no events processed!"); return

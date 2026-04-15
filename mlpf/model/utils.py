@@ -122,9 +122,10 @@ X_FEATURES = {
         "em_energy",
         "bary_z",
         "nhits",
-        "min_dR_track",   # NEW
-        "near_track_pt",  # NEW
-        "shower_depth",   # NEW
+        "min_dR_track",
+        "near_track_pt",
+        "shower_depth",
+        "sum_pt_dR10",    # NEW: sum track pT in dR<0.10
     ],
     "clic": [
         "type",

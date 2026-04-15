@@ -19,9 +19,10 @@ X_FEATURES = [
     "pt", "eta", "sin_phi", "cos_phi", "energy",
     "charge", "px", "py", "pz",
     "em_energy", "bary_z", "nhits",
-    "min_dR_track",   # NEW
-    "near_track_pt",  # NEW
-    "shower_depth",   # NEW
+    "min_dR_track",   # min dR to nearest track
+    "near_track_pt",  # pT of nearest track
+    "shower_depth",   # energy-weighted depth
+    "sum_pt_dR10",    # NEW: sum track pT in dR<0.10
 ]
 
 Y_FEATURES = [
