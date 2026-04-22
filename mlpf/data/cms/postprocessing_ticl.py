@@ -63,7 +63,12 @@ elem_branches = [
     "min_dR_track",    # min dR to nearest good track at HGCAL
     "near_track_pt",   # pT of nearest track (0 if none)
     "shower_depth",    # energy-weighted shower depth Σ(|z|×E)/Σ(E)
-    "sum_pt_dR10",     # NEW: sum of track pT within dR<0.10
+    "sum_pt_dR10",     # sum of track pT within dR<0.10
+    "n_trk_dR01",      # NEW: n tracks in dR<0.01
+    "n_trk_dR02",      # NEW: n tracks in dR<0.02
+    "n_trk_dR03",      # NEW: n tracks in dR<0.03
+    "n_trk_dR04",      # NEW: n tracks in dR<0.04
+    "n_trk_dR05",      # NEW: n tracks in dR<0.05
 ]
 
 particle_feature_order = [
@@ -1016,9 +1021,14 @@ def compute_trackster_features(ev):
             ts_depth[i] = float(np.abs(ev["ts_z"][i]))
 
     # Feature 4: sum of track pT within dR < 0.10
-    # n.had: ~0 (no tracks nearby)
-    # none-chHAD: high (charged hadron track inside)
-    ts_sum_pt10 = np.zeros(n_ts)
+    ts_sum_pt10  = np.zeros(n_ts)
+    # Features 5-9: number of tracks within dR < 0.01,0.02,0.03,0.04,0.05
+    ts_n_trk01   = np.zeros(n_ts)
+    ts_n_trk02   = np.zeros(n_ts)
+    ts_n_trk03   = np.zeros(n_ts)
+    ts_n_trk04   = np.zeros(n_ts)
+    ts_n_trk05   = np.zeros(n_ts)
+
     for i in range(n_ts):
         ts_eta_i = float(ev["ts_eta"][i])
         ts_phi_i = float(ev["ts_phi"][i])
@@ -1028,8 +1038,13 @@ def compute_trackster_features(ev):
                               np.cos(tk_phi - ts_phi_i))
             dR   = np.sqrt(deta**2 + dphi**2)
             ts_sum_pt10[i] = float(np.sum(tk_pt[dR < 0.10]))
+            ts_n_trk01[i]  = float(np.sum(dR < 0.01))
+            ts_n_trk02[i]  = float(np.sum(dR < 0.02))
+            ts_n_trk03[i]  = float(np.sum(dR < 0.03))
+            ts_n_trk04[i]  = float(np.sum(dR < 0.04))
+            ts_n_trk05[i]  = float(np.sum(dR < 0.05))
 
-    return ts_min_dR, ts_near_pt, ts_depth, ts_sum_pt10
+    return ts_min_dR, ts_near_pt, ts_depth, ts_sum_pt10,            ts_n_trk01, ts_n_trk02, ts_n_trk03, ts_n_trk04, ts_n_trk05
 
 
 def make_graph(ev, iev, use_superclustering=False):
@@ -1044,7 +1059,7 @@ def make_graph(ev, iev, use_superclustering=False):
     # The model learns to distinguish muons/electrons/hadrons from kinematics
 
     # Compute new RECO features for tracksters
-    ts_min_dR, ts_near_pt, ts_depth, ts_sum_pt10 = compute_trackster_features(ev)
+    ts_min_dR, ts_near_pt, ts_depth, ts_sum_pt10,         ts_n_trk01, ts_n_trk02, ts_n_trk03, ts_n_trk04, ts_n_trk05 =         compute_trackster_features(ev)
 
     ts_eta = ev["ts_eta"]; ts_phi = ev["ts_phi"]
     ts_pt  = ev["ts_pt"];  ts_en  = ev["ts_energy"]
@@ -1065,6 +1080,11 @@ def make_graph(ev, iev, use_superclustering=False):
             near_track_pt=float(ts_near_pt[i]),    # pT of nearest track
             shower_depth=float(ts_depth[i]),        # energy-weighted depth
             sum_pt_dR10=float(ts_sum_pt10[i]),     # sum track pT in dR<0.10
+            n_trk_dR01=float(ts_n_trk01[i]),      # n tracks in dR<0.01
+            n_trk_dR02=float(ts_n_trk02[i]),      # n tracks in dR<0.02
+            n_trk_dR03=float(ts_n_trk03[i]),      # n tracks in dR<0.03
+            n_trk_dR04=float(ts_n_trk04[i]),      # n tracks in dR<0.04
+            n_trk_dR05=float(ts_n_trk05[i]),      # n tracks in dR<0.05
             isolation=float(ts_min_dR[i] * float(ts_en[i])),  # NEW: min_dR × energy
         ))
         for i in range(n_ts)

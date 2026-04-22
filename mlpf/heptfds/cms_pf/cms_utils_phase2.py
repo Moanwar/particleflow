@@ -22,7 +22,12 @@ X_FEATURES = [
     "min_dR_track",   # min dR to nearest track
     "near_track_pt",  # pT of nearest track
     "shower_depth",   # energy-weighted depth
-    "sum_pt_dR10",    # NEW: sum track pT in dR<0.10
+    "sum_pt_dR10",    # sum track pT in dR<0.10
+    "n_trk_dR01",     # NEW: n tracks in dR<0.01
+    "n_trk_dR02",     # NEW: n tracks in dR<0.02
+    "n_trk_dR03",     # NEW: n tracks in dR<0.03
+    "n_trk_dR04",     # NEW: n tracks in dR<0.04
+    "n_trk_dR05",     # NEW: n tracks in dR<0.05
 ]
 
 Y_FEATURES = [
