@@ -429,6 +429,23 @@ class MLPF(nn.Module):
         # DNN that acts on the node level to predict the PID
         self.nn_binary_particle = ffn(decoding_dim, 2, width, self.act, dropout_ff)
         self.nn_pid = ffn(decoding_dim, num_classes, width, self.act, dropout_ff)
+        # HAD_TS dedicated MLP - completely independent from main model
+        # Input: 10 features (energy, min_dR, sum_pt, em_energy, isolation,
+        #                      n_trk_dR01-05)
+        self.nn_had_binary = nn.Sequential(
+            nn.Linear(10, 64), nn.ELU(),
+            nn.Linear(64, 64), nn.ELU(),
+            nn.Linear(64, 1), nn.Sigmoid()
+        )
+        # HAD_TS dedicated regression MLP
+        # Replaces attention-based regression for HAD_TS
+        # Input: 2 raw features (input_pt, energy), fully detached
+        # Trained with none zeroed → learns pure n.had correction
+        self.nn_had_reg_pt = nn.Sequential(
+            nn.Linear(2, 64), nn.ELU(),
+            nn.Linear(64, 64), nn.ELU(),
+            nn.Linear(64, 1)
+        )
         # self.nn_pu = ffn(decoding_dim, 2, width, self.act, dropout_ff)
 
         # elementwise DNN for node momentum regression
@@ -503,6 +520,18 @@ class MLPF(nn.Module):
         preds_sin_phi = self.nn_sin_phi(X_features, final_embedding_reg, X_features[..., 3:4])
         preds_cos_phi = self.nn_cos_phi(X_features, final_embedding_reg, X_features[..., 4:5])
 
+        # HAD_TS dedicated pT MLP - BEFORE energy computation
+        # Override attention pT with dedicated MLP for HAD_TS
+        had_reg_mask = (X_features[..., 0] == 3)
+        if had_reg_mask.any():
+            had_reg_feats = torch.stack([
+                X_features[..., 1].detach(),
+                X_features[..., 5].detach(),
+            ], dim=-1)
+            had_reg_pt = self.nn_had_reg_pt(had_reg_feats)
+            preds_pt = preds_pt.clone()
+            preds_pt[had_reg_mask] = had_reg_pt[had_reg_mask].to(preds_pt.dtype)
+
         # ensure created particle has positive mass^2 by computing energy from pt and adding a positive-only correction
         pt_real = torch.exp(preds_pt.detach()) * X_features[..., 1:2]
         # sinh does not exist on opset13, required for CMSSW_12_3_0_pre6
@@ -515,6 +544,30 @@ class MLPF(nn.Module):
         e_real[torch.isnan(e_real)] = 0
         preds_energy = e_real + torch.nn.functional.relu(self.nn_energy(X_features, final_embedding_reg, X_features[..., 5:6]))
         preds_momentum = torch.cat([preds_pt, preds_eta, preds_sin_phi, preds_cos_phi, preds_energy], axis=-1)
+
+        # HAD_TS MLP override - applied AFTER all regression is done
+        # X_features detached → gradients flow to nn_had_binary weights ONLY
+        # No gradient path to attention layers or regression
+        had_mask = (X_features[..., 0] == 3)
+        if had_mask.any():
+            had_feats = torch.stack([
+                X_features[..., 5].detach(),                          # energy
+                X_features[..., 13].detach(),                         # min_dR
+                X_features[..., 16].detach(),                         # sum_pt
+                X_features[..., 10].detach(),                         # em_energy
+                (X_features[..., 13]*X_features[..., 5]).detach(),    # isolation
+                X_features[..., 17].detach(),                         # n_trk_dR01
+                X_features[..., 18].detach(),                         # n_trk_dR02
+                X_features[..., 19].detach(),                         # n_trk_dR03
+                X_features[..., 20].detach(),                         # n_trk_dR04
+                X_features[..., 21].detach(),                         # n_trk_dR05
+            ], dim=-1)
+            had_prob   = self.nn_had_binary(had_feats).squeeze(-1)
+            had_logit  = torch.log(had_prob+1e-6) - torch.log(1-had_prob+1e-6)
+            had_binary = torch.stack([-had_logit, had_logit], dim=-1)
+            preds_binary_particle = preds_binary_particle.clone()
+            preds_binary_particle[had_mask] = had_binary[had_mask].to(
+                preds_binary_particle.dtype)
         return preds_binary_particle, preds_pid, preds_momentum, preds_pu
 
 

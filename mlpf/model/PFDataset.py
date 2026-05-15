@@ -142,7 +142,24 @@ class PFDataset:
                 "Could not find dataset {} in {}, please check that you have downloaded the correct version of the dataset".format(name, data_dir)
             )
             sys.exit(1)
-        self.ds = TFDSDataSource(builder.as_data_source(split=split), sort=sort, pad_to_multiple=pad_to_multiple)
+        # Auto-detect: if no test split exists, use 80/20 split of train
+        if split == "test":
+            try:
+                self.ds = TFDSDataSource(builder.as_data_source(split="test"), sort=sort, pad_to_multiple=pad_to_multiple)
+            except Exception:
+                _logger.warning("No test split found, using last 20% of train as test")
+                self.ds = TFDSDataSource(builder.as_data_source(split="train[80%:]"), sort=sort, pad_to_multiple=pad_to_multiple)
+        elif split == "train":
+            try:
+                builder.as_data_source(split="test")
+                # test exists → use full train
+                self.ds = TFDSDataSource(builder.as_data_source(split="train"), sort=sort, pad_to_multiple=pad_to_multiple)
+            except Exception:
+                # no test → use first 80% for train
+                _logger.warning("No test split found, using first 80% of train for training")
+                self.ds = TFDSDataSource(builder.as_data_source(split="train[:80%]"), sort=sort, pad_to_multiple=pad_to_multiple)
+        else:
+            self.ds = TFDSDataSource(builder.as_data_source(split=split), sort=sort, pad_to_multiple=pad_to_multiple)
 
         if num_samples and num_samples < len(self.ds):
             self.ds = torch.utils.data.Subset(self.ds, range(num_samples))

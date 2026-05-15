@@ -14,14 +14,14 @@ import logging
 ELEM_TYPES = {
     "cms": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     "clic": [0, 1, 2],
-    "cms_ticl": [0, 1, 2, 4],
+    "cms_ticl": [0, 1, 2, 3],  # typ_idx values after TFDS remapping
 }
 
 # Some element types are defined, but do not exist in the dataset at all
 ELEM_TYPES_NONZERO = {
     "cms": [1, 4, 5, 6, 8, 9, 10, 11],
     "clic": [1, 2],
-    "cms_ticl": [1, 2, 4],
+    "cms_ticl": [1, 2, 3],  # typ_idx values after TFDS remapping
 }
 
 CLASS_LABELS = {
@@ -125,7 +125,12 @@ X_FEATURES = {
         "min_dR_track",
         "near_track_pt",
         "shower_depth",
-        "sum_pt_dR10",    # NEW: sum track pT in dR<0.10
+        "sum_pt_dR10",    # sum track pT in dR<0.10
+        "n_trk_dR01",     # n tracks in dR<0.01
+        "n_trk_dR02",     # n tracks in dR<0.02
+        "n_trk_dR03",     # n tracks in dR<0.03
+        "n_trk_dR04",     # n tracks in dR<0.04
+        "n_trk_dR05",     # n tracks in dR<0.05
     ],
     "clic": [
         "type",
@@ -206,7 +211,7 @@ def unpack_target(y, model):
     return ret
 
 
-@torch.compile
+
 def unpack_predictions(preds):
     ret = {}
     ret["cls_binary"], ret["cls_id_onehot"], ret["momentum"], ret["ispu"] = preds
@@ -222,7 +227,6 @@ def unpack_predictions(preds):
     ret["cls_id"] = torch.argmax(ret["cls_binary"], dim=-1)
     # when a particle was predicted, get the particle ID
     ret["cls_id"][ret["cls_id"] == 1] = torch.argmax(ret["cls_id_onehot"], dim=-1)[ret["cls_id"] == 1]
-
     # get the predicted particle ID
     # ret["cls_id"] = torch.argmax(ret["cls_id_onehot"], dim=-1)
 

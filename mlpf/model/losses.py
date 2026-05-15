@@ -32,19 +32,14 @@ def mlpf_loss(y, ypred, batch):
     """
     loss = {}
 
-    # Class weights [none, ch.had, n.had, gamma, ele, mu]
-    # Moderate, physics-motivated — generalizes to PU/ttbar
+    #loss_obj_id = FocalLoss(gamma=2.0, reduction="none")
     pid_class_weights = torch.tensor(
-        [1.0, 3.0, 3.0, 2.0, 3.0, 8.0],  # n.had back to 3.0
+        [1.0, 4.0, 9.0, 1.0, 50.0, 50.0],
+        # none  ch   nhad  gam  ele   mu
         dtype=torch.float32,
         device=ypred["cls_id_onehot"].device
     )
-    binary_class_weights = torch.tensor(
-        [1.0, 1.3],  # gentle boost — between 1.0 and 2.0
-        dtype=torch.float32,
-        device=ypred["cls_binary"].device
-    )
-    loss_obj_id = FocalLoss(gamma=2.0, alpha=pid_class_weights, reduction="none")
+    loss_obj_id = FocalLoss(alpha=pid_class_weights, gamma=2.0, reduction="none")
 
     # msk_pred_particle = torch.unsqueeze((ypred["cls_id"] != 0).to(dtype=torch.float32), dim=-1)
     msk_true_particle = torch.unsqueeze((y["cls_id"] != 0).to(dtype=torch.float32), dim=-1)
@@ -60,13 +55,26 @@ def mlpf_loss(y, ypred, batch):
     # ypred["ispu"] = ypred["ispu"].permute((0, 2, 1))
 
     # binary loss for particle / no-particle classification
-    # loss_binary_classification = 10.0 * loss_obj_id(ypred["cls_binary"], (y["cls_id"] != 0).long()).reshape(y["cls_id"].shape)
+    #loss_binary_classification = 10.0 * torch.nn.functional.cross_entropy(
+    #    ypred["cls_binary"],
+    #    (y["cls_id"] != 0).long(),
+    #    reduction="none"
+    #)
+
+    binary_class_weights = torch.tensor(
+        [1.0, 4.0],  # none=1, particle=4 (tracks 78% none, HAD_TS 88% none)
+        dtype=torch.float32,
+        device=ypred["cls_binary"].device
+    )
     loss_binary_classification = 10.0 * torch.nn.functional.cross_entropy(
         ypred["cls_binary"],
         (y["cls_id"] != 0).long(),
         weight=binary_class_weights,
         reduction="none"
     )
+
+
+
 
     # compare the particle type, only for cases where there was a true particle
     loss_pid_classification = loss_obj_id(ypred["cls_id_onehot"], y["cls_id"]).reshape(y["cls_id"].shape)
@@ -93,6 +101,44 @@ def mlpf_loss(y, ypred, batch):
     loss_regression_sin_phi[y["cls_id"] == 0] *= 0
     loss_regression_cos_phi[y["cls_id"] == 0] *= 0
     loss_regression_energy[y["cls_id"] == 0] *= 0
+
+
+    # Energy-dependent boost for HAD_TS true n.had
+    # Based on signal/background ratio at each energy:
+    # E<10:    boost=1  (hopeless, no effect)
+    # E 10-20: boost=6  (rare signal, needs strong boost)
+    # E 20-50: boost=3  (moderate)
+    # E 50-100: boost=4
+    # E>100:   boost=2  (nearly balanced)
+    is_had_ts    = (batch.X[:, :, 0] == 3)
+    is_true_nhad = (y["cls_id"] == 2)
+    elem_e       = batch.X[:, :, 5]
+
+    energy_boost = torch.ones_like(elem_e)
+    energy_boost = torch.where(elem_e < 10,
+                               torch.ones_like(elem_e),    energy_boost)
+    energy_boost = torch.where(elem_e >= 10,
+                               torch.full_like(elem_e, 6.0), energy_boost)
+    energy_boost = torch.where(elem_e >= 20,
+                               torch.full_like(elem_e, 3.0), energy_boost)
+    energy_boost = torch.where(elem_e >= 50,
+                               torch.full_like(elem_e, 4.0), energy_boost)
+    energy_boost = torch.where(elem_e >= 100,
+                               torch.full_like(elem_e, 2.0), energy_boost)
+
+    had_boost = torch.where(
+        is_had_ts & is_true_nhad,
+        energy_boost,
+        torch.ones_like(loss_binary_classification)
+    )
+    loss_binary_classification = loss_binary_classification * had_boost
+
+    # For HAD_TS none: zero regression loss
+    is_had_ts_none = is_had_ts & (y["cls_id"] == 0)
+    loss_regression_pt[is_had_ts_none]     *= 0
+    loss_regression_energy[is_had_ts_none] *= 0
+
+
 
     # set the loss to 0 on padded elements in the batch
     loss_binary_classification[batch.mask == 0] *= 0

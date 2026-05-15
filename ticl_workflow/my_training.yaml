@@ -1,5 +1,5 @@
 train: yes
-test: no
+test: yes
 make_plots: no
 comet: no          # turn off, no comet account needed
 dataset: cms_ticl
@@ -9,10 +9,10 @@ gpus: 1            # H100 GPU!
 gpu_batch_multiplier: 128
 load:
 finetune:
-num_steps: 200000
-patience: 10
-val_freq: 20000
-checkpoint_freq: 20000
+num_steps: 100000
+patience: 20
+val_freq: 5000
+checkpoint_freq: 5000
 lr: 0.0004
 lr_schedule: cosinedecay
 conv_type: attention

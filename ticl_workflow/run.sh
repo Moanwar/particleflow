@@ -8,7 +8,7 @@ cd /home/moanwar/mlpf/particleflow/
 
 export PYTHONPATH=$(pwd)
 export KERAS_BACKEND=torch
-export TFDS_DATA_DIR=/cms/data/store/user/moanwar/mlpf_data/mix_part_0pu/tensorflow_datasets
+export TFDS_DATA_DIR=/cms/data/store/user/moanwar/mlpf_data/ttbar_0pu/tensorflow_datasets
 
 # Limit to single GPU and be conservative with memory
 export CUDA_VISIBLE_DEVICES=0
@@ -17,10 +17,10 @@ python mlpf/pipeline.py \
   --config /home/moanwar/mlpf/particleflow/ticl_workflow/my_training.yaml \
   --data-dir $TFDS_DATA_DIR \
   --prefix MLPF_ticl_test_ \
-  --experiment-dir /cms/data/store/user/moanwar/mlpf_data/experiments/  \
+  --experiment-dir /cms/data/store/user/moanwar/mlpf_data/experiments_ttbar/  \
   train \
   --gpus 1 \
-  --num-steps 50000 \
+  --num-steps 100000 \
   --dtype bfloat16 \
   --conv-type attention \
   --attention-type flash \
