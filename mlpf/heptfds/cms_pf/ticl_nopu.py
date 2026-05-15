@@ -58,13 +58,13 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
             ),
         )
 
-    def _split_generators(self, dl_manager: tfds.download.DownloadManager):
+    def _split_generators_old(self, dl_manager: tfds.download.DownloadManager):
         import pickle
         
         # Get paths from environment variables with defaults
-        input_dir=os.environ.get("INPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files_v2/")
-        output_base=os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/processed_v2/")
-        
+        input_dir=os.environ.get("INPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/pikl_files/")
+        output_base=os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/processed/")
+
         # Construct full paths
         #input_pkl = os.path.join(input_dir, "ticl_graph_data_prt.pkl")
         #split_output_dir = pathlib.Path(output_base) / "ticl_particleGun_0pu"
@@ -122,6 +122,26 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
             self.builder_config,
             num_splits=cms_utils_phase2.NUM_SPLITS
         )
+
+    def _split_generators(self, dl_manager: tfds.download.DownloadManager):
+        # 1. Get input directory from environment
+        input_dir = os.environ.get("INPUT_DIR", "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/pikl_files/")
+        
+        # 2. Get ALL files and SORT them to ensure consistency across parallel jobs
+        all_files = sorted([str(f) for f in pathlib.Path(input_dir).glob("*.pkl")])
+        
+        # 3. Use the config name (1, 2, 3...) to pick a unique subset of files
+        # idx 0 takes files 0, 10, 20...; idx 1 takes 1, 11, 21...
+        idx = int(self.builder_config.name) - 1 
+        num_splits = cms_utils_phase2.NUM_SPLITS
+        my_files = all_files[idx::num_splits] 
+        
+        print(f"Config {self.builder_config.name}: Processing {len(my_files)} files out of {len(all_files)}")
+        
+        # 4. Return the generator pointing only to this job's files
+        return {
+            "train": self._generate_examples(my_files)
+        }
 
     def _generate_examples(self, files):
         return cms_utils_phase2.generate_examples(files)
