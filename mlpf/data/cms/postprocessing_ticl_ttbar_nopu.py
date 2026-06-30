@@ -15,7 +15,8 @@ import multiprocessing
 
 """
 Gen → SimCand matching (no eta cuts):
-
+   test
+   python3 postprocessing_ticl_ttbar_nopu.py --input ttbar_0pu_6M_v2.txt --output tmp/test_no_sc2.pkl --num-events 100 --max-files 5
   No eta endcap cut anywhere — gen, simCand, elements are all unrestricted.
 
   Gen filter:
@@ -54,7 +55,22 @@ elem_branches = [
     "em_energy", "bary_z", "nhits",
     "min_dR_track", "near_track_pt", "shower_depth", "sum_pt_dR10",
     "n_trk_dR01", "n_trk_dR02", "n_trk_dR03", "n_trk_dR04", "n_trk_dR05",
+    # trackster new features
+    "n_clusters", "ts_time", "ts_time_err",
+    # track new features
+    "track_muon_type", "track_muon_dt_hits", "track_muon_csc_hits",
+    "track_gsf_type",
+    "track_pt_err", "track_eta_err", "track_phi_err",
+    "track_lambda_err", "track_qoverp_err",
+    "track_vx", "track_vy", "track_vz",
 ]
+
+#elem_branches = [
+#    "typ", "pt", "eta", "phi", "energy", "charge", "px", "py", "pz",
+#    "em_energy", "bary_z", "nhits",
+#    "min_dR_track", "near_track_pt", "shower_depth", "sum_pt_dR10",
+#    "n_trk_dR01", "n_trk_dR02", "n_trk_dR03", "n_trk_dR04", "n_trk_dR05",
+#]
 
 particle_feature_order = [
     "pid", "charge", "pt", "eta", "sin_phi", "cos_phi", "energy",
@@ -72,7 +88,7 @@ _CAT_NHAD  = frozenset([130, 310])        # neutral hadrons
 _CAT_MU    = frozenset([13])              # muons
 
 # ── tunable thresholds ────────────────────────────────────────────────────────
-GEN_PT_MIN   = 0.0    # min gen pT (GeV)
+GEN_PT_MIN   = 1.0    # min gen pT (GeV)
 DR_MAX_EM    = 0.1    # EM:            electrons, photons
 DR_MAX_CHAD  = 0.1    # charged hadron: pi+/-, K+/-
 DR_MAX_NHAD  = 0.1    # neutral hadron: K0L, K0S
@@ -326,10 +342,11 @@ def read_all_events(trees, start_event=0, num_events=-1):
     a_tkst   = trees['tkst'].arrays(
         ["raw_energy", "barycenter_eta", "barycenter_phi",
          "raw_pt", "raw_em_energy", "barycenter_z",
-         "vertices_z", "vertices_energy"], **sl)
+         "vertices_z", "vertices_energy", "time", "timeError", "vertices_indexes"], **sl)
     a_tkstEG = trees['tkstEG'].arrays(
         ["raw_energy", "barycenter_eta", "barycenter_phi",
-         "raw_pt", "raw_em_energy", "barycenter_z"], **sl)
+         "raw_pt", "raw_em_energy", "barycenter_z",
+         "vertices_z", "vertices_energy", "time", "timeError", "vertices_indexes"], **sl)
     a_simtkst = trees['simtkst'].arrays(
         ["regressed_energy", "barycenter_eta", "barycenter_phi",
          "pdgID", "trackIdx", "CPidx"], **sl)
@@ -341,7 +358,7 @@ def read_all_events(trees, start_event=0, num_events=-1):
         ["simTICLCandidate_pdgId", "simTICLCandidate_pt",
          "simTICLCandidate_eta", "simTICLCandidate_phi",
          "simTICLCandidate_regressed_energy", "simTICLCandidate_raw_energy",
-         "simTICLCandidate_tracks_in_candidate",
+         "simTICLCandidate_tracks_in_candidate", "simTICLCandidate_gsftracks_in_candidate",
          "simTICLCandidate_simTracksterCPIndex",
          "simTICLCandidate_ispu"], **sl)
     a_genpar = trees['genpar'].arrays(
@@ -349,9 +366,11 @@ def read_all_events(trees, start_event=0, num_events=-1):
          "GenPart_phi", "GenPart_pdgId", "GenPart_mass",
          "GenPart_pt", "GenPart_energy"], **sl)
     a_track  = trees['track'].arrays(
-        ["track_pt", "track_p", "track_eta", "track_hgcal_phi", "track_hgcal_eta",
-         "track_charge", "track_id", "track_missing_outer_hits",
-         "track_quality", "track_nhits"], **sl)
+        ["track_pt", "track_p", "track_eta", "track_phi", "track_lambda", "track_hgcal_phi", "track_hgcal_eta",
+         "track_charge", "track_id", "track_missing_outer_hits","track_quality", "track_nhits", "track_muon_type",
+         "track_muon_dt_hits", "track_muon_csc_hits", "track_gsf_type", "track_etaError", "track_phiError",
+         "track_lambdaError", "track_ptError", "track_qoverpError", "track_vx", "track_vy", "track_vz",
+         "track_time", "track_time_err"], **sl)
     a_assoc  = trees['assoc'].arrays(
         ["ticlTracksterLinks_recoToSim_CP_score",
          "ticlTracksterLinks_simToReco_CP_score",
@@ -363,6 +382,12 @@ def read_all_events(trees, start_event=0, num_events=-1):
          "ticlTracksterLinksSuperclusteringDNN_simToReco_CP_sharedE",
          "ticlTracksterLinksSuperclusteringDNN_recoToSim_CP",
          "ticlTracksterLinksSuperclusteringDNN_recoToSim_CP_score"], **sl)
+    a_gsftrack  = trees['gsftrack'].arrays(
+        ["gsf_track_ptMode", "gsf_track_ptModeError", "gsf_track_pxMode", "gsf_track_pyMode", "gsf_track_pzMode",
+         "gsf_track_etaMode", "gsf_track_etaModeError", "gsf_track_phiMode", "gsf_track_phiModeError",
+         "gsf_track_pMode", "gsf_track_vx", "gsf_track_vy", "gsf_track_vz",
+         "gsf_track_qoverpError", "gsf_track_quality", "gsf_track_nhits", "gsf_track_id", "gsf_track_lambda",
+         "gsf_track_charge"], **sl)
 
     events = []
     for i in range(num_events):
@@ -375,6 +400,9 @@ def read_all_events(trees, start_event=0, num_events=-1):
         ev["ts_vertices_z"]  = a_tkst["vertices_z"][i]
         ev["ts_vertices_e"]  = a_tkst["vertices_energy"][i]
         ev["ts_em_energy"]   = a_tkst["raw_em_energy"][i]
+        ev["ts_vertices_idx"]  = a_tkst["vertices_indexes"][i]   
+        ev["ts_time"]          = a_tkst["time"][i]               
+        ev["ts_time_err"]      = a_tkst["timeError"][i]          
 
         ev["tsEG_energy"]    = a_tkstEG["raw_energy"][i]
         ev["tsEG_pt"]        = a_tkstEG["raw_pt"][i]
@@ -382,6 +410,9 @@ def read_all_events(trees, start_event=0, num_events=-1):
         ev["tsEG_phi"]       = a_tkstEG["barycenter_phi"][i]
         ev["tsEG_z"]         = a_tkstEG["barycenter_z"][i]
         ev["tsEG_em_energy"] = a_tkstEG["raw_em_energy"][i]
+        ev["tsEG_vertices_idx"] = a_tkstEG["vertices_indexes"][i]
+        ev["tsEG_time"]         = a_tkstEG["time"][i]            
+        ev["tsEG_time_err"]     = a_tkstEG["timeError"][i]       
 
         ev["simtkst_energy"]   = a_simtkst["regressed_energy"][i]
         ev["simtkst_eta"]      = a_simtkst["barycenter_eta"][i]
@@ -405,6 +436,7 @@ def read_all_events(trees, start_event=0, num_events=-1):
         ev["simcan_reg_energy"]          = a_simcan["simTICLCandidate_regressed_energy"][i]
         ev["simcan_raw_energy"]          = a_simcan["simTICLCandidate_raw_energy"][i]
         ev["simcan_trkId"]               = a_simcan["simTICLCandidate_tracks_in_candidate"][i]
+        ev["simcan_gsftrkId"]            = a_simcan["simTICLCandidate_gsftracks_in_candidate"][i]
         ev["simcan_simTracksterCPIndex"] = a_simcan["simTICLCandidate_simTracksterCPIndex"][i]
         ev["simcan_ispu"]                = a_simcan["simTICLCandidate_ispu"][i]
 
@@ -428,7 +460,42 @@ def read_all_events(trees, start_event=0, num_events=-1):
         ev["track_nhits"]     = a_track["track_nhits"][i]
         ev["track_hgcal_eta"] = a_track["track_hgcal_eta"][i]
         ev["track_hgcal_phi"] = a_track["track_hgcal_phi"][i]
+        ev["track_muon_type"]    = a_track["track_muon_type"][i]    
+        ev["track_muon_dt_hits"] = a_track["track_muon_dt_hits"][i] 
+        ev["track_muon_csc_hits"]= a_track["track_muon_csc_hits"][i]
+        ev["track_gsf_type"]     = a_track["track_gsf_type"][i]     
+        ev["track_pt_err"]       = a_track["track_ptError"][i]      
+        ev["track_eta_err"]      = a_track["track_etaError"][i]     
+        ev["track_phi_err"]      = a_track["track_phiError"][i]     
+        ev["track_lambda_err"]   = a_track["track_lambdaError"][i]  
+        ev["track_qoverp_err"]   = a_track["track_qoverpError"][i]  
+        ev["track_vx"]           = a_track["track_vx"][i]           
+        ev["track_vy"]           = a_track["track_vy"][i]           
+        ev["track_vz"]           = a_track["track_vz"][i]           
+        ev["track_time"]         = a_track["track_time"][i]
+        ev["track_time_err"]     = a_track["track_time_err"][i]
 
+        ev["gsf_track_ptMode"]       = a_gsftrack["gsf_track_ptMode"][i]
+        ev["gsf_track_ptMode"]       = a_gsftrack["gsf_track_ptMode"][i]
+        ev["gsf_track_ptModeError"]  = a_gsftrack["gsf_track_ptModeError"][i]
+        ev["gsf_track_pxMode"]       = a_gsftrack["gsf_track_pxMode"][i]
+        ev["gsf_track_pyMode"]       = a_gsftrack["gsf_track_pyMode"][i]
+        ev["gsf_track_pzMode"]       = a_gsftrack["gsf_track_pzMode"][i]
+        ev["gsf_track_etaMode"]      = a_gsftrack["gsf_track_etaMode"][i]
+        ev["gsf_track_etaModeError"] = a_gsftrack["gsf_track_etaModeError"][i]
+        ev["gsf_track_phiMode"]      = a_gsftrack["gsf_track_phiMode"][i]
+        ev["gsf_track_phiModeError"] = a_gsftrack["gsf_track_phiModeError"][i]
+        ev["gsf_track_pMode"]        = a_gsftrack["gsf_track_pMode"][i]
+        ev["gsf_track_vx"]           = a_gsftrack["gsf_track_vx"][i]
+        ev["gsf_track_vy"]           = a_gsftrack["gsf_track_vy"][i]
+        ev["gsf_track_vz"]           = a_gsftrack["gsf_track_vz"][i]
+        ev["gsf_track_qoverpError"]  = a_gsftrack["gsf_track_qoverpError"][i] 
+        ev["gsf_track_quality"]      = a_gsftrack["gsf_track_quality"][i]
+        ev["gsf_track_nhits"]        = a_gsftrack["gsf_track_nhits"][i]
+        ev["gsf_track_id"]           = a_gsftrack["gsf_track_id"][i]
+        ev["gsf_track_lambda"]       = a_gsftrack["gsf_track_lambda"][i]
+        ev["gsf_track_charge"]       = a_gsftrack["gsf_track_charge"][i]
+        
         ev["ticlTracksterLinks_recoToSim_CP_score"]      = a_assoc["ticlTracksterLinks_recoToSim_CP_score"][i]
         ev["ticlTracksterLinks_simToReco_CP_score"]      = a_assoc["ticlTracksterLinks_simToReco_CP_score"][i]
         ev["ticlTracksterLinks_simToReco_CP_sharedE"]    = a_assoc["ticlTracksterLinks_simToReco_CP_sharedE"][i]
@@ -479,7 +546,7 @@ def collect_hadronic_connections(ev, matched_simcand_indices):
                     continue
             connections.append({
                 'cp_idx': sim_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
-                'cp_eta': cp_eta, 'element_idx': trackster_idx, 'element_type': 4,
+                'cp_eta': cp_eta, 'element_idx': trackster_idx, 'element_type': 3,
                 'shared_energy': ts_energy[trackster_idx],
                 'element_energy': ts_energy[trackster_idx],
                 'is_charged': is_charged_particle(cp_pid)
@@ -603,8 +670,45 @@ def collect_track_connections(ev, matched_simcand_indices):
     return connections
 
 
+def collect_gsf_track_connections(ev, matched_simcand_indices, use_superclustering=False):
+    connections = []
+    n_ts = len(ev["ts_energy"])
+    n_tracks = len(ev["track_p"])
+    n_ts_eg = len(ev["tsEG_energy"])
+    gsf_track_id_to_idx = {tid: i for i, tid in enumerate(ev["gsf_track_id"])}
+    simcan_gsftrkId   = ev["simcan_gsftrkId"]
+    simcan_pdgid      = ev["simcan_pdgid"]
+    simcan_reg_energy = ev["simcan_reg_energy"]
+    simcan_raw_energy = ev["simcan_raw_energy"]
+    simcan_eta        = ev["simcan_eta"]
+    gsf_track_p       = ev["gsf_track_pMode"]
+    gsf_offset        = n_ts + n_tracks + (n_ts_eg if use_superclustering else 0)
+    
+    for cp_idx, gsf_track_indices in enumerate(simcan_gsftrkId):
+        if cp_idx not in matched_simcand_indices:
+            continue
+        if len(gsf_track_indices) == 0:
+            continue
+        cp_pid    = simcan_pdgid[cp_idx]
+        if abs(cp_pid) != 11 :
+            continue
+        cp_energy = simcan_raw_energy[cp_idx] 
+        cp_eta    = simcan_eta[cp_idx]
+        for gsftrack_id in gsf_track_indices:
+            gsftrack_idx = gsf_track_id_to_idx.get(gsftrack_id)
+            if gsftrack_idx is None:
+                continue
+            tp = gsf_track_p[gsftrack_idx]
+            connections.append({
+                'cp_idx': cp_idx, 'cp_pid': cp_pid, 'cp_energy': cp_energy,
+                'cp_eta': cp_eta, 'element_idx': gsf_offset + gsftrack_idx, 'element_type': 4,
+                'shared_energy': tp, 'element_energy': tp,
+                'is_charged': is_charged_particle(cp_pid),
+            })
+    return connections
+
 # ── Everything below unchanged from original ──────────────────────────────────
-def split_caloparticles(connections, ev):
+def split_caloparticles(connections, ev, use_superclustering=False):
     cp_groups = defaultdict(list)
     for conn in connections:
         cp_groups[conn['cp_idx']].append(conn)
@@ -612,17 +716,20 @@ def split_caloparticles(connections, ev):
     split_cps  = []
     new_cp_idx = len(ev["simcan_raw_energy"])
 
-    simcan_ispu  = ev["simcan_ispu"]
-    simcan_eta   = ev["simcan_eta"]
-    simcan_phi   = ev["simcan_phi"]
-    simcan_pdgid = ev["simcan_pdgid"]
-    n_ts         = len(ev["ts_energy"])
-    n_ts_eg      = len(ev["tsEG_energy"])
-    n_tracks     = len(ev["track_pt"])
-    track_eta    = ev["track_eta"]
-    ts_eta       = ev["ts_eta"]
-    tsEG_eta     = ev["tsEG_eta"]
-
+    simcan_ispu    = ev["simcan_ispu"]
+    simcan_eta     = ev["simcan_eta"]
+    simcan_phi     = ev["simcan_phi"]
+    simcan_pdgid   = ev["simcan_pdgid"]
+    n_ts           = len(ev["ts_energy"])
+    n_ts_eg        = len(ev["tsEG_energy"])
+    n_tracks       = len(ev["track_pt"])
+    n_gsftracks = len(ev["gsf_track_ptMode"])
+    track_eta      = ev["track_eta"]
+    ts_eta         = ev["ts_eta"]
+    tsEG_eta       = ev["tsEG_eta"]
+    gsf_track_eta  = ev["gsf_track_etaMode"]
+    n_ts_eg_offset = n_ts_eg if use_superclustering else 0
+    
     for cp_idx, conns in cp_groups.items():
         if not conns:
             continue
@@ -641,15 +748,24 @@ def split_caloparticles(connections, ev):
                 if 0 <= ti < len(track_eta):
                     elem_eta = track_eta[ti]
             elif elem_type == 4:
+                ti = elem_idx - (n_ts + n_tracks + n_ts_eg_offset)
+                if 0 <= ti < len(gsf_track_eta):
+                    elem_eta = gsf_track_eta[ti]
+            elif elem_type == 3:
                 if 0 <= elem_idx < n_ts:
                     elem_eta = ts_eta[elem_idx]
-            elif elem_type in (2, 3):
-                if elem_idx < n_ts:
-                    elem_eta = ts_eta[elem_idx]
+            elif elem_type == 2:
+                if use_superclustering:
+                    if elem_idx < n_ts:
+                        elem_eta = ts_eta[elem_idx]
+                    else:
+                        ti = elem_idx - (n_ts + n_tracks)
+                        if 0 <= ti < n_ts_eg:
+                            elem_eta = tsEG_eta[ti]
                 else:
-                    ti = elem_idx - (n_ts + n_tracks)
-                    if 0 <= ti < n_ts_eg:
-                        elem_eta = tsEG_eta[ti]
+                    # without superclustering, EM_TS elements are in ts_eta
+                    if 0 <= elem_idx < n_ts:
+                        elem_eta = ts_eta[elem_idx]
             if elem_eta is not None and cp_eta * elem_eta > 0:
                 valid_elements.append(conn)
 
@@ -657,27 +773,41 @@ def split_caloparticles(connections, ev):
             continue
 
         tracks         = [e for e in valid_elements if e['element_type'] == 1]
-        had_tracksters = [e for e in valid_elements if e['element_type'] == 4]
+        had_tracksters = [e for e in valid_elements if e['element_type'] == 3]
         em_tracksters  = [e for e in valid_elements if e['element_type'] == 2]
+        gsf_tracks     = [e for e in valid_elements if e['element_type'] == 4]
 
         if abs_pid in (11, 22, 13):
             if abs_pid == 11:
-                if not tracks and not em_tracksters:
+                if not tracks and not em_tracksters and not gsf_tracks:
                     continue
-                total_shared_tracks = sum(t['shared_energy'] for t in tracks) or 1.0
-                total_shared_em     = sum(e['shared_energy'] for e in em_tracksters) or 1.0
-                for t in tracks:
-                    sf = t['shared_energy'] / total_shared_tracks
-                    split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                        'element_idx': t['element_idx'], 'element_type': 1,
-                        'cp_energy': t['cp_energy'] * sf, 'cp_pid': t['cp_pid'],
-                        'cp_eta': t['cp_eta'], 'weight': 1, 'is_winner': True, 'ispu': cp_ispu})
-                for em in em_tracksters:
-                    sf = em['shared_energy'] / total_shared_em
-                    split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                        'element_idx': em['element_idx'], 'element_type': 2,
-                        'cp_energy': em['cp_energy'] * sf, 'cp_pid': em['cp_pid'],
-                        'cp_eta': em['cp_eta'], 'weight': 1, 'is_winner': True, 'ispu': cp_ispu})
+                # Priority: GSF tracks first, then regular tracks, then EM_TS only as fallback
+                # This ensures EM_TS elements are free for gamma assignment
+                if gsf_tracks:
+                    total_shared_gsftracks = sum(t['shared_energy'] for t in gsf_tracks) or 1.0
+                    for gsft in gsf_tracks:
+                        sf = gsft['shared_energy'] / total_shared_gsftracks
+                        split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
+                            'element_idx': gsft['element_idx'], 'element_type': 4,
+                            'cp_energy': gsft['cp_energy'] * sf, 'cp_pid': gsft['cp_pid'],
+                            'cp_eta': gsft['cp_eta'], 'weight': 1, 'is_winner': True, 'ispu': cp_ispu})
+                if tracks:
+                    total_shared_tracks = sum(t['shared_energy'] for t in tracks) or 1.0
+                    for t in tracks:
+                        sf = t['shared_energy'] / total_shared_tracks
+                        split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
+                            'element_idx': t['element_idx'], 'element_type': 1,
+                            'cp_energy': t['cp_energy'] * sf, 'cp_pid': t['cp_pid'],
+                            'cp_eta': t['cp_eta'], 'weight': 1, 'is_winner': True, 'ispu': cp_ispu})
+                # Only use EM_TS for electrons if no track and no GSF track available
+                if not gsf_tracks and not tracks and em_tracksters:
+                    total_shared_em = sum(e['shared_energy'] for e in em_tracksters) or 1.0
+                    for em in em_tracksters:
+                        sf = em['shared_energy'] / total_shared_em
+                        split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
+                            'element_idx': em['element_idx'], 'element_type': 2,
+                            'cp_energy': em['cp_energy'] * sf, 'cp_pid': em['cp_pid'],
+                            'cp_eta': em['cp_eta'], 'weight': 1, 'is_winner': True, 'ispu': cp_ispu})
                 new_cp_idx += 1
             elif abs_pid == 22:
                 if not em_tracksters:
@@ -712,7 +842,7 @@ def split_caloparticles(connections, ev):
             new_cp_idx += 1
             for had in had_tracksters:
                 split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                    'element_idx': had['element_idx'], 'element_type': 4,
+                    'element_idx': had['element_idx'], 'element_type': 3,
                     'cp_energy': 0.0, 'cp_pid': had['cp_pid'],
                     'cp_eta': had['cp_eta'], 'weight': 0.0,
                     'is_winner': False, 'ispu': cp_ispu})
@@ -729,7 +859,7 @@ def split_caloparticles(connections, ev):
                 new_cp_idx += 1
             for had in had_tracksters:
                 split_cps.append({'original_idx': cp_idx, 'new_idx': new_cp_idx,
-                    'element_idx': had['element_idx'], 'element_type': 4,
+                    'element_idx': had['element_idx'], 'element_type': 3,
                     'cp_energy': 0.0, 'cp_pid': had['cp_pid'],
                     'cp_eta': had['cp_eta'], 'weight': 0.0,
                     'is_winner': False, 'ispu': cp_ispu})
@@ -832,10 +962,14 @@ def make_graph(ev, iev, use_superclustering=False):
     _py    = ts_pt * np.sin(ts_phi)
     _pz    = ts_en * np.cos(_theta)
 
+    ts_vx     = ev["ts_vertices_idx"]
+    ts_time   = ev["ts_time"]
+    ts_time_e = ev["ts_time_err"]
+
     # all trackster element nodes (no eta cut)
     g.add_nodes_from(
         (("elem", i), dict(
-            typ=4, pt=float(ts_pt[i]), energy=float(ts_en[i]),
+            typ=3, pt=float(ts_pt[i]), energy=float(ts_en[i]),
             eta=float(ts_eta[i]), phi=float(ts_phi[i]), charge=0.0,
             px=float(_px[i]), py=float(_py[i]), pz=float(_pz[i]),
             em_energy=float(ev["ts_em_energy"][i]),
@@ -850,6 +984,9 @@ def make_graph(ev, iev, use_superclustering=False):
             n_trk_dR04=float(ts_n_trk04[i]),
             n_trk_dR05=float(ts_n_trk05[i]),
             isolation=float(ts_min_dR[i] * float(ts_en[i])),
+            n_clusters=float(len(ts_vx[i])),                      
+            ts_time=float(ts_time[i])     if len(ts_time)   > i else 0.0,
+            ts_time_err=float(ts_time_e[i]) if len(ts_time_e) > i else 0.0,
         ))
         for i in range(n_ts)
     )
@@ -881,10 +1018,55 @@ def make_graph(ev, iev, use_superclustering=False):
                 sum_pt_dR10=0.0, n_trk_dR01=0.0, n_trk_dR02=0.0,
                 n_trk_dR03=0.0, n_trk_dR04=0.0, n_trk_dR05=0.0,
                 isolation=0.0,
+                n_clusters=0.0, ts_time=float(ev["track_time"][itrk]),
+                ts_time_err=float(ev["track_time_err"][itrk]),
+                track_muon_type=float(ev["track_muon_type"][itrk]),
+                track_muon_dt_hits=float(ev["track_muon_dt_hits"][itrk]),
+                track_muon_csc_hits=float(ev["track_muon_csc_hits"][itrk]),
+                track_gsf_type=float(ev["track_gsf_type"][itrk]),
+                track_pt_err=float(ev["track_pt_err"][itrk]),
+                track_eta_err=float(ev["track_eta_err"][itrk]),
+                track_phi_err=float(ev["track_phi_err"][itrk]),
+                track_lambda_err=float(ev["track_lambda_err"][itrk]),
+                track_qoverp_err=float(ev["track_qoverp_err"][itrk]),
+                track_vx=float(ev["track_vx"][itrk]),
+                track_vy=float(ev["track_vy"][itrk]),
+                track_vz=float(ev["track_vz"][itrk]),
             )
         ))
     g.add_nodes_from(track_nodes)
 
+    n_gsftracks = len(ev["gsf_track_ptMode"])
+    gsf_offset = n_ts + n_tracks + (n_ts_eg if use_superclustering else 0)
+    for igsf in range(n_gsftracks):
+        g.add_node(
+            ("elem", gsf_offset+ igsf),
+            typ=4,
+            pt=float(ev["gsf_track_ptMode"][igsf]),
+            energy=float(ev["gsf_track_pMode"][igsf]),
+            eta=float(ev["gsf_track_etaMode"][igsf]),
+            phi=float(ev["gsf_track_phiMode"][igsf]),
+            charge=float(ev["gsf_track_charge"][igsf]),
+            px=float(ev["gsf_track_pxMode"][igsf]),
+            py=float(ev["gsf_track_pyMode"][igsf]),
+            pz=float(ev["gsf_track_pzMode"][igsf]),
+            em_energy=0.0, bary_z=0.0, nhits=float(ev["gsf_track_nhits"][igsf]),
+            min_dR_track=0.0, near_track_pt=0.0, shower_depth=0.0,
+            sum_pt_dR10=0.0, n_trk_dR01=0.0, n_trk_dR02=0.0,
+            n_trk_dR03=0.0, n_trk_dR04=0.0, n_trk_dR05=0.0,
+            isolation=0.0, n_clusters=0.0,
+            ts_time=0.0, ts_time_err=0.0,
+            track_muon_type=0.0, track_muon_dt_hits=0.0, track_muon_csc_hits=0.0,
+            track_gsf_type=1.0,
+            track_pt_err=float(ev["gsf_track_ptModeError"][igsf]),
+            track_eta_err=float(ev["gsf_track_etaModeError"][igsf]),
+            track_phi_err=float(ev["gsf_track_phiModeError"][igsf]),
+            track_lambda_err=0.0,
+            track_qoverp_err=float(ev["gsf_track_qoverpError"][igsf]),
+            track_vx=float(ev["gsf_track_vx"][igsf]),
+            track_vy=float(ev["gsf_track_vy"][igsf]),
+            track_vz=float(ev["gsf_track_vz"][igsf]),
+        )
     eg_eta = ev["tsEG_eta"]; eg_phi = ev["tsEG_phi"]
     eg_pt  = ev["tsEG_pt"];  eg_en  = ev["tsEG_energy"]
     _theta_eg = 2.0 * np.arctan(np.exp(-eg_eta.astype(np.float64)))
@@ -912,8 +1094,9 @@ def make_graph(ev, iev, use_superclustering=False):
                                              use_superclustering=use_superclustering)
     all_connections = (collect_hadronic_connections(ev, matched_simcand_indices) +
                        em_connections +
-                       collect_track_connections(ev, matched_simcand_indices))
-    split_cps = split_caloparticles(all_connections, ev)
+                       collect_track_connections(ev, matched_simcand_indices)
+                       + collect_gsf_track_connections(ev, matched_simcand_indices, use_superclustering))
+    split_cps = split_caloparticles(all_connections, ev, use_superclustering)
 
     if not use_superclustering:
         em_ts_indices = set(conn["element_idx"] for conn in em_connections)
@@ -924,7 +1107,7 @@ def make_graph(ev, iev, use_superclustering=False):
 
     cp_totals = defaultdict(lambda: {'track': 0.0, 'cluster': 0.0})
     for sc in split_cps:
-        key = 'track' if sc['element_type'] == 1 else 'cluster'
+        key = 'track' if sc['element_type'] in (1, 4) else 'cluster'
         cp_totals[sc['original_idx']][key] += sc['weight']
 
     simcan_eta = ev["simcan_eta"]; simcan_phi = ev["simcan_phi"]
@@ -1084,17 +1267,21 @@ def find_representative_elements(g, elem_to_cp, cp_to_elem, elem_type, pid_type=
 def prepare_normalized_table(g):
     all_elements = [n for n in g.nodes if n[0] == "elem"]
     all_elements.sort(key=lambda x: (
-        0 if g.nodes[x]["typ"] == 1 else
-        1 if g.nodes[x]["typ"] == 2 else
-        2 if g.nodes[x]["typ"] == 4 else 3,
+        0 if g.nodes[x]["typ"] == 4 else   # GSF tracks 
+        1 if g.nodes[x]["typ"] == 1 else   # regular tracks
+        2 if g.nodes[x]["typ"] == 2 else   # EM tracksters
+        3 if g.nodes[x]["typ"] == 3 else 4, # HAD tracksters
         x[1]
     ))
+
             
     elem_to_primary_cp = {}
     cp_to_primary_elem = {}
-    for et in (1, 2, 4):
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 4, pid_type=11)
+    find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, 1, pid_type=11)
+    for et in (1, 2, 3):
         find_representative_elements(g, elem_to_primary_cp, cp_to_primary_elem, et)
-
+    
     primary_pairs = set()
     for elem, cp in elem_to_primary_cp.items():
         primary_pairs.add((cp, elem))
@@ -1257,7 +1444,8 @@ def process_file_no_progress(input_file, num_events=-1, start_event=0,
         'track':  'ticlDumper/tracks',
         'assoc':  'ticlDumper/associations',
         'tkstEG': 'ticlDumper/ticlTracksterLinksSuperclusteringDNN',
-        'genpar': 'ticlDumper/genparticles'
+        'genpar': 'ticlDumper/genparticles',
+        'gsftrack': 'ticlDumper/gsftracks'
     }
     for key, tname in tree_names.items():
         try:    trees[key] = tf[tname]
@@ -1501,7 +1689,7 @@ def main():
     if all_data:
         total_elements   = sum(len(e['Xelem'])                  for e in all_data)
         total_tracks     = sum(np.sum(e['Xelem']['typ'] == 1)   for e in all_data)
-        total_tracksters = sum(np.sum(e['Xelem']['typ'] == 4)   for e in all_data)
+        total_tracksters = sum(np.sum(e['Xelem']['typ'] == 3)   for e in all_data)
         total_em_ts      = sum(np.sum(e['Xelem']['typ'] == 2)   for e in all_data)
         total_cp         = sum(np.sum(e['ytarget']['pid'] > 0)  for e in all_data)
         genmet_vals      = np.array([e['genmet'][0] for e in all_data])
