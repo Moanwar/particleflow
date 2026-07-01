@@ -1,8 +1,8 @@
 # check_files.py
 import uproot, sys, os
 
-output    = "zll_0pu_v0.txt"
-directory="/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/zll_0pu_v0/histo/"
+output    = "qcd_0pu_v0.txt"
+directory="/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/qcd_0pu/histo/"
 
 files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.root')]
 

@@ -12,7 +12,7 @@ echo "Starting job on $(date)"
 echo "Running on: $(uname -a)"
 echo "JOB_INDEX=${JOB_INDEX}"
 
-FILES_PER_JOB=5
+FILES_PER_JOB=6
 START=$(( JOB_INDEX * FILES_PER_JOB + 1 ))
 END=$(( START + FILES_PER_JOB - 1 ))
 echo "Processing lines ${START} to ${END}"
@@ -28,12 +28,12 @@ fi
 
 cat "${TMPLIST}"
 
-OUTPUT="ticl_zll_nopu_${JOB_INDEX}.pkl"
+OUTPUT="ticl_qcd_nopu_${JOB_INDEX}.pkl"
 
 python3 postprocessing_ticl_ttbar_nopu.py \
     --input "${TMPLIST}" \
     --output "${OUTPUT}" \
-    --events-per-pkl 5000
+    --events-per-pkl 6000
 
 if [ $? -ne 0 ]; then
     echo "ERROR: postprocessing failed"
@@ -41,7 +41,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Copy output to EOS
-for f in ticl_zll_nopu_${JOB_INDEX}_*.pkl; do
+for f in ticl_qcd_nopu_${JOB_INDEX}_*.pkl; do
     if [ -f "$f" ]; then
         xrdcp "$f" root://eosuser.cern.ch//eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu_v3/pikle_filesv1_1pTmin/
         if [ $? -eq 0 ]; then
