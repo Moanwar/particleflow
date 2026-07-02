@@ -5,6 +5,15 @@ import datetime
 import awkward as ak
 import numpy as np
 
+# workaround for 'ModuleNotFoundError: No module named importlib_resources'
+try:
+    import importlib_resources  # noqa
+except Exception:
+    import sys
+    import importlib.resources
+
+    sys.modules["importlib_resources"] = importlib.resources
+
 import tensorflow_datasets as tfds
 
 tfds.disable_progress_bar()
@@ -121,6 +130,7 @@ Y_FEATURES = [
     "cp_to_track",
     "cp_to_cluster",
     "jet_idx",
+    "particle_number",
 ]
 
 # split each dataset into equal parts for faster building
@@ -243,6 +253,8 @@ def split_sample(path, builder_config, num_splits=NUM_SPLITS, train_frac=0.9):
     split_index = int(builder_config.name) - 1
     files_train_split = split_list(files_train, num_splits)
     files_test_split = split_list(files_test, num_splits)
+    assert len(files_train_split[split_index]) > 0
+    assert len(files_test_split[split_index]) > 0
     return {
         "train": generate_examples(files_train_split[split_index]),
         "test": generate_examples(files_test_split[split_index]),

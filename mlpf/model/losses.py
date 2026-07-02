@@ -7,6 +7,23 @@ from torch import Tensor, nn
 from mlpf.logger import _logger
 
 
+REGRESSION_FEATURES = ("pt", "eta", "sin_phi", "cos_phi", "energy")
+
+
+def _mask_no_target_regression(y, ypred):
+    """Return copies with regression values zeroed where no target particle exists."""
+    is_no_target = y["cls_id"] == 0
+
+    def mask_values(values):
+        masked = dict(values)
+        for key in REGRESSION_FEATURES:
+            if key in masked:
+                masked[key] = torch.where(is_no_target, torch.zeros_like(masked[key]), masked[key])
+        return masked
+
+    return mask_values(y), mask_values(ypred)
+
+
 def sliced_wasserstein_loss(y_pred, y_true, num_projections=200):
     theta = torch.randn(num_projections, y_true.shape[-1]).to(device=y_true.device)
     theta = theta / torch.sqrt(torch.sum(theta**2, dim=1, keepdims=True))

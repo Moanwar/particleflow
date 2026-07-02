@@ -4,7 +4,6 @@
 *.pt
 *.pdf
 *.png
-data/*
 experiments/*
 prp/*
 *.pth
@@ -36,3 +35,23 @@ models
 logs
 
 env
+
+*.done
+
+.snakemake
+.profiles
+.last_jobs_dir
+
+pixi.lock
+uv.lock
+
+baselines
+
+tensorflow_datasets
+
+.cache
+
+onnx_validation/
+particleflow.egg-info/
+
+build

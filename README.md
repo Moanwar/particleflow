@@ -1,89 +1,153 @@
-[![CI](https://github.com/jpata/particleflow/workflows/CI/badge.svg)](https://github.com/jpata/particleflow/actions)
+### **Summary**
 
-# Overview
-MLPF focuses on developing full event reconstruction based on computationally scalable and flexible end-to-end ML models.
-
-<p float="left">
-  <img src="images/schematic.png" alt="High-level overview" width="600"/>
-</p>
-
-### Dataset compatibility table
-The following table specifies which version of the jpata/particleflow software should be used with which version of the tensorflow datasets.
-
-| Code  | CMS dataset | CLIC dataset | CLD dataset |
-| ----- | ----------- | ------------ | ----------- |
-| [1.9.0](https://github.com/jpata/particleflow/releases/v1.9.0) | 2.4.0    | 2.2.0    | NA |
-| [2.0.0](https://github.com/jpata/particleflow/releases/v2.0.0) | 2.4.0    | 2.3.0    | NA |
-| [2.1.0](https://github.com/jpata/particleflow/releases/v2.1.0) | 2.5.0    | 2.5.0    | NA |
-| [2.2.0](https://github.com/jpata/particleflow/releases/v2.2.0) | 2.5.0    | 2.5.0    | 2.5.0 |
-| [2.3.0](https://github.com/jpata/particleflow/releases/v2.3.0) | 2.5.0    | 2.5.0    | 2.5.0 |
-| [2.4.0](https://github.com/jpata/particleflow/releases/v2.4.0) | 2.6.0    | 2.5.0    | 2.5.0 |
-
-## MLPF on open datasets
+**ML-based particle flow (MLPF)** focuses on developing full event reconstruction for particle detectors using computationally scalable and flexible machine learning models. The project aims to improve particle flow reconstruction across various detector environments, including CMS, as well as future detectors via Key4HEP.
+We build on existing, open-source simulation software by the experimental collaborations.
 
 <p float="left">
-  <img src="images/commphys_featured_image.png" alt="PF reconstruction" width="600"/>
+  <img src="images/diagram.svg" alt="High-level overview" width="800"/>
 </p>
 
-  - paper: https://doi.org/10.1038/s42005-024-01599-5
-  - code: https://doi.org/10.5281/zenodo.10893930
-  - dataset: https://doi.org/10.5281/zenodo.8409592
-  - results: https://doi.org/10.5281/zenodo.10567397
-  - weights: https://huggingface.co/jpata/particleflow/tree/main/clic/clusters/v1.6
+---
 
-### Open datasets:
-The following datasets are available to reproduce the studies. They include full Geant4 simulation and reconstruction based on the CLIC detector. We have no affiliation with the CLIC collaboration, therefore these datasets are to be used only for computational studies and come with no warranty.
+### **TLDR; I just want to run the code**
+You can use `uv` to set up the repo and test that everything works:
+```
+git clone --recurse-submodules https://github.com/jpata/particleflow.git
+uv sync --project envs/ort-cuda
+uv run ./scripts/local_test_cld.sh
+uv run ./scripts/local_test_cms.sh
+```
 
-- MLPF-CLIC, raw data: https://zenodo.org/records/8260741 or https://www.coe-raise.eu/od-pfr
-- MLPF-CLIC, processed for ML, tracks and clusters: https://zenodo.org/records/8409592
-- MLPF-CLIC, processed for ML, tracks and hits: https://zenodo.org/records/8414225
+Alternatively, you can use a prepared container:
+```
+apptainer exec --nv https://jpata.web.cern.ch/jpata/pytorch-20260305-08d6950.sif ./scripts/local_test_cld.sh
+apptainer exec --nv https://jpata.web.cern.ch/jpata/pytorch-20260305-08d6950.sif ./scripts/local_test_cms.sh
+```
 
-## MLPF development in CMS
 
-<p float="left">
-  <img src="images/cms/ev_pf.png" alt="PF reconstruction" width="300"/>
-  <img src="images/cms/ev_mlpf.png" alt="MLPF reconstruction" width="300"/>
-</p>
 
-<p float="left">
-  <img src="images/cms/ak4jet_puppi_pt_ttbar.png" alt="PUPPI jets in ttbar" width="300"/>
-</p>
+### **Datasets**
 
-  - EPS-HEP 2025:
-    - CERN-CMS-DP-2025-033, https://cds.cern.ch/record/2937578, https://twiki.cern.ch/twiki/bin/view/CMS/DraftDPSNoteMLPFEPS2025
-  - ACAT 2022:
-    - CERN-CMS-DP-2022-061, http://cds.cern.ch/record/2842375
-  - ACAT 2021:
-    - J. Phys. Conf. Ser. 2438 012100, http://dx.doi.org/10.1088/1742-6596/2438/1/012100
-    - CERN-CMS-DP-2021-030, https://cds.cern.ch/record/2792320
-    - https://twiki.cern.ch/twiki/bin/view/Main/DraftDPSNoteMLPFACAT2021
+If you wish to train on pre-made datasets, you can download them from the [Hugging Face Hub](https://huggingface.co/datasets/jpata/particleflow).
+To download a specific dataset and split (e.g., CLD, PF setup, configuration split 1):
+```bash
+uv run hf download jpata/particleflow \
+  --include "tensorflow_datasets/cld/cld_edm_*_pf/1/*" \
+  --local-dir data/tfds \
+  --repo-type dataset
+```
+This will download the requested files into `data/tfds/tensorflow_datasets/cld/cld_edm_*_pf/1/`.
 
-## Initial development with Delphes
+### **Dataset Upload**
 
-<p float="left">
-  <img src="images/delphes/num_particles.png" alt="Number of reconstructed particles" width="250"/>
-  <img src="images/delphes/inference_time.png" alt="Scaling of the inference time" width="300"/>
-</p>
+To upload a generated dataset to the Hugging Face Hub:
+```bash
+uv run python3 scripts/upload_hf.py --repo jpata/particleflow --spec particleflow_spec.yaml clic 1
+```
 
-  - paper: https://doi.org/10.1140/epjc/s10052-021-09158-w
-  - code: https://doi.org/10.5281/zenodo.4559587
-  - dataset: https://doi.org/10.5281/zenodo.4559324
+### **Training**
 
-# Citations and reuse
+Run the training on the downloaded data configuration split
+```
+uv run \
+    python mlpf/pipeline.py \
+    --spec-file particleflow_spec.yaml \
+    --production cld \
+    --model-name pyg-cld-v1 \
+    --data-dir data/tfds/tensorflow_datasets/cld \
+    train \
+    --data_config 1 \
+    --gpu_batch_multiplier 4 \
+    --gpus 1
+```
 
-You are welcome to reuse the code in your work in accordance with the [license](https://github.com/jpata/particleflow/blob/main/LICENSE).
+### **Model Upload**
 
-For academic work, please consider citing the following papers:
-- initial idea with scalable GNN, code [v1.1](https://zenodo.org/records/4559587): https://doi.org/10.1140/epjc/s10052-021-09158-w
-- improved event-level performance in full simulation, code [v1.6.2](https://zenodo.org/records/10928968): https://doi.org/10.1038/s42005-024-01599-5
-- studies in CMS: https://cds.cern.ch/record/2792320, http://dx.doi.org/10.1088/1742-6596/2438/1/012100, http://cds.cern.ch/record/2842375
-- fine-tuning from CLIC to CLD, code [v2.3.0](https://github.com/jpata/particleflow/releases/tag/v2.3.0): https://doi.org/10.1103/PhysRevD.111.092015
-- CMS full simulation in 2025, code [v2.4.0](https://github.com/jpata/particleflow/releases/tag/v2.4.0): [https://doi.org/10.1103/PhysRevD.111.092015](https://cds.cern.ch/record/2937578)
+To upload a trained model to the Hugging Face Hub:
+```bash
+uv run python3 scripts/upload_model_hf.py experiments/pyg-clic-hits-v1_clic_20260328_144021_479374 --version v3.1.0
+```
 
-If you use the code in a significant way for research purposes, please consider citing the [tagged version](https://zenodo.org/search?q=parent.id%3A4452541&f=allversions%3Atrue&l=list&p=1&s=10&sort=version) that you used, for example:
-- Joosep Pata, Eric Wulff, Farouk Mokhtar, Javier Duarte, Aadi Tepper, Ka Wa Ho, & Lars Sørlie. (2025). jpata/particleflow: v2.2.0 (v2.2.0). Zenodo. https://doi.org/10.5281/zenodo.14650991
+### **Model Download & Evaluation**
 
-If you use the datasets prepared by the MLPF team for academic work, please cite the [appropriate dataset](https://zenodo.org/search?q=mlpf&f=allversions%3Atrue&f=resource_type%3Adataset&l=list&p=1&s=10&sort=version) via the zenodo link, as well as the corresponding paper.
+To download a specific model (e.g., CLD, cluster-based, version v3.1.0) and run evaluation on a sample ROOT file:
 
-At the moment, we are unable to release work-in-progress datasets before the corresponding academic publication is out.
-If you have a collaboration idea that does not fit into the above categories, please [get in touch](https://github.com/jpata/particleflow/discussions/categories/general)!
+1. Download the model files from the Hugging Face Hub:
+```bash
+uv run hf download jpata/particleflow \
+  --include "cld/clusters/v3.1.0/pyg-cld-v1_cld_20260328_101206_533260/*" \
+  --local-dir models \
+  --repo-type model
+```
+
+2. Run the evaluation script:
+```bash
+
+mkdir -p local_test_data/cld/p8_ee_ttbar_ecm365/root
+cd local_test_data/cld/p8_ee_ttbar_ecm365/root
+wget -q --no-check-certificate -nc https://jpata.web.cern.ch/jpata/mlpf/cld/v1.2.3_key4hep_2025-05-29_CLD_f1e8f9/gen/root/reco_p8_ee_ttbar_ecm365_300000.root
+cd ../../..
+
+uv run python3 mlpf/standalone_eval/key4hep/evaluator.py \
+  --input local_test_data/cld/p8_ee_ttbar_ecm365/root/reco_p8_ee_ttbar_ecm365_300000.root \
+  --checkpoint models/cld/clusters/v3.1.0/pyg-cld-v1_cld_20260328_101206_533260/checkpoints/best_weights.pth \
+  --detector cld \
+  --outpath eval_results.parquet
+```
+The input ROOT file should be in the [EDM4hep format](https://github.com/key4hep/EDM4hep).
+
+## **End-to-end workflow: dataset generation and model training**
+
+The full data generation, model training, and validation workflow are managed using [Pixi](https://pixi.sh/) for environment and [Snakemake](https://snakemake.readthedocs.io/) for job orchestration. Apptainer images are used to provide the software for the steps for different detetors.
+
+```bash
+#ensure all gen configs are downloaded
+git submodule update --init --recursive
+
+# install pixi, restart your shell or source your .bashrc after this. only do once.
+curl -fsSL https://pixi.sh/install.sh | bash
+
+# copy the configuration for your site. only do once.
+ln -s configs/{local,tallinn,lxplus}/pixi.toml pixi.toml
+
+# initalize the orhcestrator python environment. only do this once.
+pixi run init
+
+# generate the snakefile (will overwrite the defaults)
+PROD={cms_run3,clic,cld} pixi run snakefile
+
+# run the steps (this will take many days and thousands of jobs), so run inside screen or tmux
+PROD={cms_run3,clic,cld} pixi run gen
+PROD={cms_run3,clic,cld} pixi run post
+PROD={cms_run3,clic,cld} pixi run tfds
+PROD={cms_run3,clic,cld} pixi run train
+```
+
+---
+
+### **Publications**
+
+The following publications trace the development of MLPF from early proofs of concept to full detector simulations and fine-tuning studies across detectors.
+
+* [2021] First full-event GNN demonstration of MLPF: [Paper](https://doi.org/10.1140/epjc/s10052-021-09158-w) [Code](https://zenodo.org/records/4559587) [Dataset](https://doi.org/10.5281/zenodo.4559324)
+* [2021] First demonstration in CMS Run 3: [Paper](http://dx.doi.org/10.1088/1742-6596/2438/1/012100) [CMS-DP](https://cds.cern.ch/record/2792320)
+* [2022] Improved performance in CMS Run 3: [CMS-DP](http://cds.cern.ch/record/2842375)
+* [2024] Improved performance with full simulation for future colliders: [Paper](https://doi.org/10.1038/s42005-024-01599-5) [Code](https://zenodo.org/records/10928968) [Results](https://doi.org/10.5281/zenodo.10567397)
+* [2025] Fine-tuning across detectors: [Paper](https://doi.org/10.1103/PhysRevD.111.092015) [Code](https://zenodo.org/records/14930299)
+* [2026] CMS Run 3 full results: [Paper](https://arxiv.org/abs/2601.17554) [CMS-DP](https://cds.cern.ch/record/2937578) [Code](https://zenodo.org/records/15573658)
+
+---
+
+### **Citations and Reuse**
+
+You are welcome to reuse the code in accordance with the [LICENSE](https://github.com/jpata/particleflow/blob/main/LICENSE).
+
+**How to Cite**
+
+1. **Academic Work:** Please cite the specific papers listed in the **Publications** section above relevant to the method you are using (e.g., initial GNN idea, fine-tuning, or specific detector studies).
+2. **Code Usage:** If you use the code significantly for research, please cite the specific [tagged version from Zenodo](https://zenodo.org/search?q=parent.id%3A4452541&f=allversions%3Atrue&l=list&p=1&s=10&sort=version).
+3. **Dataset Usage:** Cite the [appropriate dataset](https://zenodo.org/search?q=mlpf&f=allversions%3Atrue&f=resource_type%3Adataset&l=list&p=1&s=10&sort=version) via the Zenodo link and the corresponding paper.
+
+**Contact**
+
+For collaboration ideas that do not fit into the categories above, please [get in touch via GitHub Discussions](https://github.com/jpata/particleflow/discussions/categories/general).

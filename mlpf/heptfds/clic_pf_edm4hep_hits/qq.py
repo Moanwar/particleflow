@@ -1,50 +1,45 @@
 from pathlib import Path
 
+import os
 import numpy as np
-from utils_edm import (
-    X_FEATURES_CH,
-    X_FEATURES_TRK,
+import tensorflow_datasets as tfds
+from mlpf.conf import Dataset
+from mlpf.heptfds.edm4hep_utils.utils_hits import (
+    NUM_SPLITS,
+    X_FEATURES,
     Y_FEATURES,
     generate_examples,
     split_sample,
 )
 
-import tensorflow_datasets as tfds
-
 _DESCRIPTION = """
-CLIC EDM4HEP dataset with qq with raw calorimeter hits.
-  - X: reconstructed tracks and calorimeter hits, variable number N per event
-  - ygen: stable generator particles, zero-padded to N per event
-  - ycand: baseline particle flow particles, zero-padded to N per event
+CLIC EDM4HEP dataset with ee -> qq at 380 GeV, using hit-level information.
+  - X: reconstructed hits, variable number N per event
+  - ytarget: stable generator particles, zero-padded to N per event
+  - ycand: empty/zeros for hit-level
 """
 
 _CITATION = """
-Pata, Joosep, Wulff, Eric, Duarte, Javier, Mokhtar, Farouk, Zhang, Mengke, Girone, Maria, & Southwick, David. (2023).
-Simulated datasets for detector and particle flow reconstruction: CLIC detector (1.1) [Data set].
-Zenodo. https://doi.org/10.5281/zenodo.8260741
+FIXME
 """
 
 
-class ClicEdmQqHitsPf(tfds.core.GeneratorBasedBuilder):
-    VERSION = tfds.core.Version("1.7.0")
+class ClicEdmQqHits(tfds.core.GeneratorBasedBuilder):
+    VERSION = tfds.core.Version(os.environ.get("TFDS_VERSION", "3.2.0"))
     RELEASE_NOTES = {
-        "0.9.0": "Small stats",
-        "1.0.0": "Initial release",
-        "1.1.0": "Remove track referencepoint feature",
-        "1.2.0": "Keep all interacting genparticles",
-        "1.5.0": "Regenerate with ARRAY_RECORD",
-        "1.7.0": "Update track features",
+        "3.1.0": "Hit-level version with separated tracker and calorimeter hits",
+        "3.2.0": "add particle_number to Y_FEATURES",
     }
     MANUAL_DOWNLOAD_INSTRUCTIONS = """
     For the raw input files in ROOT EDM4HEP format, please see the citation above.
-
-    The processed tensorflow_dataset can also be downloaded from:
-    FIXME
     """
+
+    # create configs 1 ... NUM_SPLITS + 1 that allow to parallelize the dataset building
+    BUILDER_CONFIGS = [tfds.core.BuilderConfig(name=str(group)) for group in range(1, NUM_SPLITS + 1)]
 
     def __init__(self, *args, **kwargs):
         kwargs["file_format"] = tfds.core.FileFormat.ARRAY_RECORD
-        super(ClicEdmQqHitsPf, self).__init__(*args, **kwargs)
+        super(ClicEdmQqHits, self).__init__(*args, **kwargs)
 
     def _info(self) -> tfds.core.DatasetInfo:
         """Returns the dataset metadata."""
@@ -56,27 +51,31 @@ class ClicEdmQqHitsPf(tfds.core.GeneratorBasedBuilder):
                     "X": tfds.features.Tensor(
                         shape=(
                             None,
-                            max(len(X_FEATURES_TRK), len(X_FEATURES_CH)),
+                            len(X_FEATURES),
                         ),
                         dtype=np.float32,
                     ),
-                    "ygen": tfds.features.Tensor(shape=(None, len(Y_FEATURES)), dtype=np.float32),
+                    "ytarget": tfds.features.Tensor(shape=(None, len(Y_FEATURES)), dtype=np.float32),
                     "ycand": tfds.features.Tensor(shape=(None, len(Y_FEATURES)), dtype=np.float32),
+                    "genmet": tfds.features.Scalar(dtype=np.float32),
+                    "genjets": tfds.features.Tensor(shape=(None, 4), dtype=np.float32),
+                    "targetjets": tfds.features.Tensor(shape=(None, 4), dtype=np.float32),
                 }
             ),
             supervised_keys=None,
-            homepage="",
+            homepage="https://github.com/jpata/particleflow",
             citation=_CITATION,
             metadata=tfds.core.MetadataDict(
-                x_features_track=X_FEATURES_TRK,
-                x_features_calohit=X_FEATURES_CH,
+                x_features=X_FEATURES,
                 y_features=Y_FEATURES,
             ),
         )
 
+    # Abstract method needs to be specified
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         path = dl_manager.manual_dir
-        return split_sample(Path(path / "p8_ee_qq_ecm380/"))
+        return split_sample(Path(path / "p8_ee_qq_ecm380"), self.builder_config, num_splits=NUM_SPLITS, dataset=Dataset.CLIC_HITS)
 
+    # Abstract method needs to be specified
     def _generate_examples(self, files):
-        return generate_examples(files)
+        return generate_examples(files, Dataset.CLIC_HITS)

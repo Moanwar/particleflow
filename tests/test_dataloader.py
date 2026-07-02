@@ -1,3 +1,7 @@
+"""
+Spec: Ensures the training dataloader state is correctly saved and restored via 'get_interleaved_dataloaders'. Mocks 'PFDataset' to isolate dataloader logic. Key assertions: Verifies that a 'restored' dataloader yields a sequence of data identical to an uninterrupted 'ground truth' run, even across epoch boundaries and partial batch exhaustion.
+"""
+
 import os
 import shutil
 import tempfile
@@ -6,24 +10,12 @@ from unittest.mock import patch
 
 import torch
 import torch.optim as optim
-from torch.utils.data import Dataset
+from tests.mock_data import MockDictDataset
 
 from mlpf.model.PFDataset import get_interleaved_dataloaders
 from mlpf.model.utils import save_checkpoint, load_checkpoint
 from mlpf.model.mlpf import MLPF
-
-
-class MockTorchDataset(Dataset):
-    """A mock torch dataset that returns dictionaries."""
-
-    def __init__(self, size=100):
-        self.size = size
-
-    def __len__(self):
-        return self.size
-
-    def __getitem__(self, idx):
-        return {"X": torch.tensor([[float(idx), 1.0]]), "ytarget": torch.tensor([[float(idx), 1.0]]), "genmet": 0.0}
+from mlpf.conf import MLPFConfig
 
 
 class TestDataloaderRestoration(unittest.TestCase):
@@ -38,15 +30,20 @@ class TestDataloaderRestoration(unittest.TestCase):
         """Ensures that the dataloader state is correctly saved and restored."""
         # Configure the mock PFDataset to return our mock torch dataset
         mock_pf_instance = MockPFDataset.return_value
-        mock_pf_instance.ds = MockTorchDataset()
+        mock_pf_instance.ds = MockDictDataset(size=100, keys=("X", "ytarget", "genmet"), shapes=((1, 2), (1, 2), (1,)))
 
         # Set seed once for reproducibility
         torch.manual_seed(0)
 
         # 1. Create mock config
-        config = {
+        config_dict = {
             "dataset": "cms",
             "data_dir": "/tmp/dummy_data",
+            "model": {
+                "type": "attention",
+                "attention": {"num_convs": 2},
+            },
+            "conv_type": "attention",
             "train_dataset": {
                 "cms": {
                     "type1": {
@@ -71,6 +68,7 @@ class TestDataloaderRestoration(unittest.TestCase):
             "pad_to_multiple_elements": None,
             "gpu_batch_multiplier": 1,
         }
+        config = MLPFConfig.model_validate(config_dict)
 
         world_size = 1
         rank = 0
@@ -99,7 +97,7 @@ class TestDataloaderRestoration(unittest.TestCase):
             run1_data.append(batch.X.clone())
         print(run1_data)
 
-        model = MLPF(input_dim=2, num_classes=2)
+        model = MLPF(config)
         optimizer = optim.Adam(model.parameters())
         checkpoint_path = os.path.join(self.tempdir, "checkpoint.pth")
         extra_state = {"step": 5, "train_loader_state_dict": train_loader1.state_dict()}
@@ -135,12 +133,17 @@ class TestDataloaderRestoration(unittest.TestCase):
         fully exhausted, and that it correctly transitions to the next epoch.
         """
         mock_pf_instance = MockPFDataset.return_value
-        mock_pf_instance.ds = MockTorchDataset(size=21)  # 10 batches per epoch
+        mock_pf_instance.ds = MockDictDataset(size=21, keys=("X", "ytarget", "genmet"), shapes=((1, 2), (1, 2), (1,)))
 
         torch.manual_seed(0)
-        config = {
+        config_dict = {
             "dataset": "cms",
             "data_dir": "/tmp/dummy_data",
+            "model": {
+                "type": "attention",
+                "attention": {"num_convs": 2},
+            },
+            "conv_type": "attention",
             "train_dataset": {
                 "cms": {
                     "type1": {
@@ -165,6 +168,7 @@ class TestDataloaderRestoration(unittest.TestCase):
             "pad_to_multiple_elements": None,
             "gpu_batch_multiplier": 1,
         }
+        config = MLPFConfig.model_validate(config_dict)
         world_size = 1
         rank = 0
 
@@ -191,7 +195,7 @@ class TestDataloaderRestoration(unittest.TestCase):
         for _ in range(stop_at_batch):
             run1_data.append(next(iterator1).X.clone())
 
-        model = MLPF(input_dim=2, num_classes=2)
+        model = MLPF(config)
         optimizer = optim.Adam(model.parameters())
         checkpoint_path = os.path.join(self.tempdir, "checkpoint.pth")
         extra_state = {"step": stop_at_batch, "train_loader_state_dict": train_loader1.state_dict()}
@@ -212,3 +216,91 @@ class TestDataloaderRestoration(unittest.TestCase):
         self.assertEqual(len(combined_data), len(gt_data))
         for i in range(len(gt_data)):
             self.assertTrue(torch.equal(combined_data[i], gt_data[i]), f"Batch {i} differs")
+
+    @patch("mlpf.model.PFDataset.PFDataset")
+    def test_sampler_from_scratch(self, MockPFDataset):
+        """Ensures that when sampler_from_scratch is True, the dataloader state is NOT loaded and starts from scratch."""
+        mock_pf_instance = MockPFDataset.return_value
+        mock_pf_instance.ds = MockDictDataset(size=100, keys=("X", "ytarget", "genmet"), shapes=((1, 2), (1, 2), (1,)))
+
+        torch.manual_seed(0)
+
+        # Create config with sampler_from_scratch = True
+        config_dict = {
+            "dataset": "cms",
+            "data_dir": "/tmp/dummy_data",
+            "model": {
+                "type": "attention",
+                "attention": {"num_convs": 2},
+            },
+            "conv_type": "attention",
+            "train_dataset": {
+                "cms": {
+                    "type1": {
+                        "batch_size": 2,
+                        "samples": {"sample1": {"version": "1.0.0", "splits": ["split1"]}},
+                    }
+                }
+            },
+            "valid_dataset": {
+                "cms": {
+                    "type1": {
+                        "batch_size": 2,
+                        "samples": {"sample1": {"version": "1.0.0", "splits": ["split1"]}},
+                    }
+                }
+            },
+            "ntrain": 100,
+            "nvalid": 100,
+            "num_workers": 2,
+            "prefetch_factor": 2,
+            "sort_data": False,
+            "pad_to_multiple_elements": None,
+            "gpu_batch_multiplier": 1,
+            "sampler_from_scratch": True,
+        }
+        config = MLPFConfig.model_validate(config_dict)
+        self.assertTrue(config.sampler_from_scratch)
+
+        world_size = 1
+        rank = 0
+
+        # --- Ground Truth Run (uninterrupted, starting from scratch) ---
+        loaders_gt, _ = get_interleaved_dataloaders(world_size, rank, config, use_cuda=False, use_ray=False, shuffle_train=False)
+        train_loader_gt = loaders_gt["train"]
+        gt_data = []
+        for i, batch in enumerate(train_loader_gt):
+            if i >= 5:
+                break
+            gt_data.append(batch.X.clone())
+
+        # --- Interrupted Run ---
+        torch.manual_seed(0)
+        loaders1, _ = get_interleaved_dataloaders(world_size, rank, config, use_cuda=False, use_ray=False, shuffle_train=False)
+        train_loader1 = loaders1["train"]
+
+        run1_data = []
+        for i in range(3):
+            batch = next(train_loader1)
+            run1_data.append(batch.X.clone())
+
+        # Mock saving a checkpoint with loader state
+        checkpoint = {"extra_state": {"train_loader_state_dict": train_loader1.state_dict()}}
+
+        # --- Restored Run with sampler_from_scratch = True ---
+        loaders2, _ = get_interleaved_dataloaders(world_size, rank, config, use_cuda=False, use_ray=False, shuffle_train=False)
+        train_loader2 = loaders2["train"]
+
+        # In training.py / distributed_ray.py: load state dict only if not sampler_from_scratch
+        if not config.sampler_from_scratch:
+            train_loader2.load_state_dict(checkpoint["extra_state"]["train_loader_state_dict"])
+
+        run2_data = []
+        for i in range(2):
+            batch = next(train_loader2)
+            run2_data.append(batch.X.clone())
+
+        # Verification: since we did NOT load the state dict, train_loader2 should start from scratch (first 2 batches of gt_data)
+        # instead of continuing from batch 3.
+        self.assertTrue(torch.equal(run2_data[0], gt_data[0]))
+        self.assertTrue(torch.equal(run2_data[1], gt_data[1]))

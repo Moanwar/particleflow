@@ -5,33 +5,41 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-
   workflow_dispatch:
 
 jobs:
-  test-in-container:
+  test:
     runs-on: ubuntu-latest
     container:
       image: pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [cms, cld]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cache pip packages
+      - name: Install system dependencies
+        run: apt-get update && apt-get install -y wget gcc g++ build-essential curl
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh && echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache uv
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('**/uv.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            ${{ runner.os }}-uv-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv pip install --system .
 
-      - name: Install wget
-        run: |
-          apt-get update && apt-get install -y wget gcc g++ build-essential
+      - name: Sync ONNX environment
+        run: uv sync --project envs/ort-cpu
 
-      - name: Run tests
-        run: ./scripts/local_test_torch.sh
+      - name: Run ${{ matrix.target }} test
+        run: bash scripts/local_test_${{ matrix.target }}.sh
