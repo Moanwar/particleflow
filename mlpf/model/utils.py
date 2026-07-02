@@ -14,14 +14,14 @@ import logging
 ELEM_TYPES = {
     "cms": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     "clic": [0, 1, 2],
-    "cms_ticl": [0, 1, 2, 3],  # typ_idx values after TFDS remapping
+    "cms_ticl": [0, 1, 2, 3, 4],  # typ_idx values after TFDS remapping (4=GSF track)
 }
 
 # Some element types are defined, but do not exist in the dataset at all
 ELEM_TYPES_NONZERO = {
     "cms": [1, 4, 5, 6, 8, 9, 10, 11],
     "clic": [1, 2],
-    "cms_ticl": [1, 2, 3],  # typ_idx values after TFDS remapping
+    "cms_ticl": [1, 2, 3, 4],  # typ_idx values after TFDS remapping
 }
 
 CLASS_LABELS = {
@@ -125,12 +125,27 @@ X_FEATURES = {
         "min_dR_track",
         "near_track_pt",
         "shower_depth",
-        "sum_pt_dR10",    # sum track pT in dR<0.10
-        "n_trk_dR01",     # n tracks in dR<0.01
-        "n_trk_dR02",     # n tracks in dR<0.02
-        "n_trk_dR03",     # n tracks in dR<0.03
-        "n_trk_dR04",     # n tracks in dR<0.04
-        "n_trk_dR05",     # n tracks in dR<0.05
+        "sum_pt_dR10",
+        "n_trk_dR01",
+        "n_trk_dR02",
+        "n_trk_dR03",
+        "n_trk_dR04",
+        "n_trk_dR05",
+        # new trackster features
+        "n_clusters",
+        # new track features
+        "track_muon_type",
+        "track_muon_dt_hits",
+        "track_muon_csc_hits",
+        "track_gsf_type",
+        "track_pt_err",
+        "track_eta_err",
+        "track_phi_err",
+        "track_lambda_err",
+        "track_qoverp_err",
+        "track_vx",
+        "track_vy",
+        "track_vz",
     ],
     "clic": [
         "type",

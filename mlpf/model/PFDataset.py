@@ -14,7 +14,7 @@ SHARING_STRATEGY = "file_descriptor"
 
 
 class TFDSDataSource:
-    def __init__(self, ds, sort, pad_to_multiple=None):
+    def __init__(self, ds, sort, pad_to_multiple=None, pt_cut=0.0):
         self.ds = ds
         tmp = self.ds.dataset_info
         self.ds.dataset_info = SimpleNamespace()
@@ -23,6 +23,7 @@ class TFDSDataSource:
         self.ds.dataset_info.config_name = tmp.config_name
         self.sort = sort
         self.pad_to_multiple = pad_to_multiple
+        self.pt_cut = pt_cut
 
     def __getitem__(self, item):
         if isinstance(item, int):
@@ -34,6 +35,14 @@ class TFDSDataSource:
         ret = [self.ds.dataset_info.features.deserialize_example_np(record, decoders=self.ds.decoders) for record in records]
         assert len(ret) == 1
         ret = ret[0]
+        # Drop ts_time (col 23) and ts_time_err (col 24) — sentinel values cause issues
+        ret["X"] = np.concatenate([ret["X"][:, :23], ret["X"][:, 25:]], axis=-1)
+        # Optional pT cut — keep none elements always, cut true particles below threshold
+        if self.pt_cut > 0.0:
+            pt_mask = (ret["ytarget"][:, 0] == 0) | (ret["X"][:, 1] >= self.pt_cut)
+            ret["X"]       = ret["X"][pt_mask]
+            ret["ycand"]   = ret["ycand"][pt_mask]
+            ret["ytarget"] = ret["ytarget"][pt_mask]
 
         Xshape = ret["X"].shape
         _logger.debug(f"Getting item={item}, ds={self.ds.dataset_info.name}:{self.ds.dataset_info.config_name}, X={Xshape}")
@@ -125,7 +134,7 @@ class TFDSDataSource:
 class PFDataset:
     """Builds a DataSource from tensorflow datasets."""
 
-    def __init__(self, data_dir, name, split, num_samples=None, sort=False, pad_to_multiple=512):
+    def __init__(self, data_dir, name, split, num_samples=None, sort=False, pad_to_multiple=512, pt_cut=0.0):
         """
         Args
             data_dir: path to tensorflow_datasets (e.g. `../data/tensorflow_datasets/`)
@@ -145,21 +154,21 @@ class PFDataset:
         # Auto-detect: if no test split exists, use 80/20 split of train
         if split == "test":
             try:
-                self.ds = TFDSDataSource(builder.as_data_source(split="test"), sort=sort, pad_to_multiple=pad_to_multiple)
+                self.ds = TFDSDataSource(builder.as_data_source(split="test"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
             except Exception:
                 _logger.warning("No test split found, using last 20% of train as test")
-                self.ds = TFDSDataSource(builder.as_data_source(split="train[80%:]"), sort=sort, pad_to_multiple=pad_to_multiple)
+                self.ds = TFDSDataSource(builder.as_data_source(split="train[80%:]"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
         elif split == "train":
             try:
                 builder.as_data_source(split="test")
                 # test exists → use full train
-                self.ds = TFDSDataSource(builder.as_data_source(split="train"), sort=sort, pad_to_multiple=pad_to_multiple)
+                self.ds = TFDSDataSource(builder.as_data_source(split="train"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
             except Exception:
                 # no test → use first 80% for train
                 _logger.warning("No test split found, using first 80% of train for training")
-                self.ds = TFDSDataSource(builder.as_data_source(split="train[:80%]"), sort=sort, pad_to_multiple=pad_to_multiple)
+                self.ds = TFDSDataSource(builder.as_data_source(split="train[:80%]"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
         else:
-            self.ds = TFDSDataSource(builder.as_data_source(split=split), sort=sort, pad_to_multiple=pad_to_multiple)
+            self.ds = TFDSDataSource(builder.as_data_source(split=split), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
 
         if num_samples and num_samples < len(self.ds):
             self.ds = torch.utils.data.Subset(self.ds, range(num_samples))
@@ -411,6 +420,7 @@ def get_interleaved_dataloaders(world_size, rank, config, use_cuda, use_ray, shu
                         num_samples=nevents,
                         sort=config["sort_data"],
                         pad_to_multiple=config.get("pad_to_multiple_elements", None),
+                        pt_cut=config.get("pt_cut", 0.0),
                     ).ds
 
                     if (rank == 0) or (rank == "cpu"):

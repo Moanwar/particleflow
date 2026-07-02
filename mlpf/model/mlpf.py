@@ -433,7 +433,7 @@ class MLPF(nn.Module):
         # Input: 10 features (energy, min_dR, sum_pt, em_energy, isolation,
         #                      n_trk_dR01-05)
         self.nn_had_binary = nn.Sequential(
-            nn.Linear(10, 64), nn.ELU(),
+            nn.Linear(11, 64), nn.ELU(),  # +1: n_clusters(col22)
             nn.Linear(64, 64), nn.ELU(),
             nn.Linear(64, 1), nn.Sigmoid()
         )
@@ -561,6 +561,7 @@ class MLPF(nn.Module):
                 X_features[..., 19].detach(),                         # n_trk_dR03
                 X_features[..., 20].detach(),                         # n_trk_dR04
                 X_features[..., 21].detach(),                         # n_trk_dR05
+                X_features[..., 22].detach(),                         # n_clusters
             ], dim=-1)
             had_prob   = self.nn_had_binary(had_feats).squeeze(-1)
             had_logit  = torch.log(had_prob+1e-6) - torch.log(1-had_prob+1e-6)
