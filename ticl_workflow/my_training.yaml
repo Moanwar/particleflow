@@ -1,94 +1,150 @@
-train: yes
-test: yes
-make_plots: no
-comet: no          # turn off, no comet account needed
-dataset: cms_ticl
-sort_data: no
-data_dir:
-gpus: 1            # H100 GPU!
-gpu_batch_multiplier: 128
-load:
-finetune:
-num_steps: 100000
-patience: 20
-val_freq: 5000
 checkpoint_freq: 5000
+comet: false
+comet_name: particleflow-pt
+comet_offline: false
+comet_step_freq: 10
+conv_type: heptv2
+data_dir: null
+dataset: cms_ticl
+dtype: bfloat16
+finetune: null
+gpu_batch_multiplier: 256
+gpus: 1
+load: null
 lr: 0.0004
 lr_schedule: cosinedecay
-conv_type: attention
-ntrain:
-ntest: 50000
-nvalid: 50000
-num_workers: 1
-prefetch_factor: 2
-comet_name: particleflow-pt
-comet_offline: False
-comet_step_freq: 10
-dtype: bfloat16     # no bfloat16 on CPU
-pad_to_multiple: 256
-
+make_plots: false
 model:
-  trainable: all
-  learned_representation_mode: last
-  input_encoding: split
-  pt_mode: direct-elemtype-split
-  eta_mode: linear
-  sin_phi_mode: linear
+  attention:
+    activation: elu
+    attention_type: flash
+    conv_type: heptv2
+    dropout_conv_id_ff: 0.0
+    dropout_conv_id_mha: 0.0
+    dropout_conv_reg_ff: 0.0
+    dropout_conv_reg_mha: 0.0
+    dropout_ff: 0.0
+    head_dim: 16
+    num_convs: 3
+    num_heads: 16
+    use_pre_layernorm: true
   cos_phi_mode: linear
   energy_mode: direct-elemtype-split
-
-  attention:
-    conv_type: attention
-    num_convs: 3
-    dropout_ff: 0.0
-    dropout_conv_id_mha: 0.0
-    dropout_conv_id_ff: 0.0
-    dropout_conv_reg_mha: 0.0
-    dropout_conv_reg_ff: 0.0
-    activation: "elu"
-    head_dim: 16
-    num_heads: 16
-    attention_type: flash  # flash works on GPU!
-    use_pre_layernorm: True
-
+  eta_mode: linear
   gnn_lsh:
-    conv_type: gnn_lsh
-    embedding_dim: 512
-    width: 512
-    num_convs: 8
-    dropout_ff: 0.0
-    activation: "elu"
+    activation: elu
     bin_size: 320
-    max_num_bins: 200
+    conv_type: gnn_lsh
     distance_dim: 128
-    layernorm: True
-    num_node_messages: 2
+    dropout_ff: 0.0
+    embedding_dim: 512
     ffn_dist_hidden_dim: 128
     ffn_dist_num_layers: 2
-
+    layernorm: true
+    max_num_bins: 200
+    num_convs: 8
+    num_node_messages: 2
+    width: 512
+  heptv2:
+    embedding_dim: 128
+    width: 512
+    num_convs: 3
+    num_heads: 8
+    dropout_ff: 0.0
+    activation: elu
+    pe_type: learned
+    block_size: 100
+    n_hashes: 3
+    num_regions: 140
+    num_w_per_dist: 10
+    mlp_ratio: 4.0
+  input_encoding: split
+  learned_representation_mode: last
+  pt_mode: direct-elemtype-split
+  sin_phi_mode: linear
+  trainable: all
+ntest: 50000
+ntrain: null
+num_steps: 200000
+num_workers: 4
+nvalid: 50000
 optimizer: adamw
-
-# YOUR DATA - only change is here
+pad_to_multiple_elements: 1000
+pt_cut: 0.0  # disabled — needs track-only implementation  # remove elements with pT < 1 GeV
+patience: 20
+prefetch_factor: 4
+sort_data: false
+test: true
+test_dataset:
+  cms_pf_ticl_nopu:
+    batch_size: 1
+    splits: &id001
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+    - 32
+    - 33
+    - 34
+    - 35
+    - 36
+    - 37
+    - 38
+    - 39
+    - 40
+    - 41
+    - 42
+    - 43
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49
+    - 50
+    version: 2.0.0
+train: true
 train_dataset:
   cms_ticl:
     physical_nopu:
       batch_size: 4
       samples:
         cms_pf_ticl_nopu:
-          version: 1.0.0
-          splits: [1,2,3,4,5,6,7,8,9,10]
-
+          splits: *id001
+          version: 2.0.0
+val_freq: 5000
 valid_dataset:
   cms_ticl:
     physical_nopu:
       batch_size: 1
       samples:
         cms_pf_ticl_nopu:
-          version: 1.0.0
-          splits: [1,2,3,4,5,6,7,8,9,10]
-
-test_dataset:
-  cms_pf_ticl_nopu:
-    batch_size: 1
-    version: 1.0.0
-    splits: [1,2,3,4,5,6,7,8,9,10]
+          splits: *id001
+          version: 2.0.0
