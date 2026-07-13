@@ -18,7 +18,7 @@ model:
   attention:
     activation: elu
     attention_type: flash
-    conv_type: heptv2
+    conv_type: attention
     dropout_conv_id_ff: 0.0
     dropout_conv_id_mha: 0.0
     dropout_conv_reg_ff: 0.0

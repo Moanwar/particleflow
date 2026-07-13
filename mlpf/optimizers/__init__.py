@@ -1,30 +1,26 @@
 import torch
 from mlpf.optimizers.lamb import Lamb
 from mlpf.logger import _logger
-from mlpf.conf import MLPFConfig, OptimizerType
 
-
-def get_optimizer(model: torch.nn.Module, config: MLPFConfig):
-    """
-    Returns the optimizer for the given model based on the configuration provided.
-    Parameters:
-    model (torch.nn.Module): The model for which the optimizer is to be created.
-    config (MLPFConfig): Configuration object.
-    Returns:
-    torch.optim.Optimizer: The optimizer specified in the configuration.
-    Raises:
-    ValueError: If the specified optimizer type is not supported.
-    """
-
-    wd = config.weight_decay
-    if config.optimizer == OptimizerType.ADAMW:
-        ret = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=wd)
-    elif config.optimizer == OptimizerType.LAMB:
-        ret = Lamb(model.parameters(), lr=config.lr, weight_decay=wd)
-    elif config.optimizer == OptimizerType.SGD:
-        ret = torch.optim.SGD(model.parameters(), lr=config.lr, weight_decay=wd)
+def get_optimizer(model, config):
+    # handle both dict and MLPFConfig
+    if isinstance(config, dict):
+        wd  = config.get("weight_decay", 0.01)
+        lr  = config.get("lr", 0.0004)
+        opt = config.get("optimizer", "adamw")
     else:
-        raise ValueError(f"Unsupported optimizer type: {config.optimizer}")
+        wd  = config.weight_decay
+        lr  = config.lr
+        opt = config.optimizer.value if hasattr(config.optimizer, 'value') else config.optimizer
+
+    if opt == "adamw":
+        ret = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    elif opt == "lamb":
+        ret = Lamb(model.parameters(), lr=lr, weight_decay=wd)
+    elif opt == "sgd":
+        ret = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd)
+    else:
+        raise ValueError(f"Unsupported optimizer type: {opt}")
 
     _logger.info(f"Created optimizer: {ret}")
     return ret

@@ -14,7 +14,7 @@ import logging
 ELEM_TYPES = {
     "cms": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     "clic": [0, 1, 2],
-    "cms_ticl": [0, 1, 2, 3, 4],  # typ_idx values after TFDS remapping (4=GSF track)
+    "cms_ticl": [0, 1, 2, 3, 4],  # typ_idx values after TFDS remapping (4=GSF)
 }
 
 # Some element types are defined, but do not exist in the dataset at all
@@ -131,9 +131,7 @@ X_FEATURES = {
         "n_trk_dR03",
         "n_trk_dR04",
         "n_trk_dR05",
-        # new trackster features
         "n_clusters",
-        # new track features
         "track_muon_type",
         "track_muon_dt_hits",
         "track_muon_csc_hits",

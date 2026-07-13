@@ -810,7 +810,7 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
     # Nvidia: compilation should generally be used, but can be disabled
     # ROCM: compilation seems to be needed for ROCm to work properly
     if rank != "cpu":
-        model.compile()
+        pass  # model.compile() disabled for compatibility
     configure_model_trainable(model, config["model"]["trainable"], True)
 
     if world_size > 1:
