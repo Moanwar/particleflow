@@ -28,12 +28,12 @@ Key Functions:
 - `run_test`: Runs inference on a specified test dataset.
 - `get_optimizer`: Utility to create an optimizer based on the configuration.
 - `configure_model_trainable`: Utility to set specific model layers as trainable.
-- `override_config`: Merges command-line arguments into the configuration dictionary.
 """
 
 import os
 import os.path as osp
 import time
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import gc
@@ -60,28 +60,36 @@ from mlpf.model.utils import (
     unpack_target,
     load_checkpoint,
     save_checkpoint,
-    CLASS_LABELS,
-    X_FEATURES,
-    ELEM_TYPES_NONZERO,
     save_HPs,
     get_lr_schedule,
     count_parameters,
     load_lr_schedule,
 )
-from mlpf.model.monitoring import log_step_to_tensorboard, log_dataloader_to_tensorboard
+from mlpf.model.monitoring import (
+    log_step_to_tensorboard,
+    log_dataloader_to_tensorboard,
+    log_open_files_to_tensorboard,
+    log_gpu_utilization_to_tensorboard,
+    log_gradients_to_tensorboard,
+    log_residuals_to_tensorboard,
+)
 from mlpf.model.inference import make_plots, run_predictions
+from mlpf.model.plots import validation_plots
 from mlpf.model.mlpf import MLPF, configure_model_trainable
 from mlpf.model.PFDataset import Collater, PFDataset, get_interleaved_dataloaders
 from mlpf.model.losses import mlpf_loss
 from mlpf.utils import create_comet_experiment
-from typing import Union
+from mlpf.conf import MLPFConfig
+from mlpf.jet_utils import get_jet_config
 
-def model_step(batch, model, loss_fn):
+
+def model_step(batch, model, loss_fn, regression_weights):
     _logger.debug(f"model_step X={batch.X.shape}")
     ypred_raw = model(batch.X, batch.mask)
     ypred = unpack_predictions(ypred_raw)
     ytarget = unpack_target(batch.ytarget, model)
-    loss_opt, losses_detached = loss_fn(ytarget, ypred, batch)
+
+    loss_opt, losses_detached = loss_fn(ytarget, ypred, batch, regression_weights)
     return loss_opt, losses_detached, ypred_raw, ypred, ytarget
 
 
@@ -109,9 +117,11 @@ def train_step(
     batch,
     lr_schedule,
     step: int,
+    regression_weights,
     tensorboard_writer=None,
     comet_experiment=None,
     comet_step_freq=None,
+    tensorboard_step_freq=100,
     checkpoint_dir="",
     device_type="cuda",
     dtype=torch.float32,
@@ -131,6 +141,7 @@ def train_step(
         tensorboard_writer: TensorBoard writer object
         comet_experiment: Comet.ml experiment object
         comet_step_freq: How often to log to comet
+        tensorboard_step_freq: How often to log to TensorBoard
         checkpoint_dir: Directory to save checkpoints
         device_type: 'cuda' or 'cpu'
         dtype: Torch dtype for computations
@@ -147,7 +158,7 @@ def train_step(
     batch = batch.to(rank, non_blocking=True)
 
     with torch.autocast(device_type=device_type, dtype=dtype, enabled=device_type == "cuda"):
-        loss_opt, loss, _, _, _ = model_step(batch, model, mlpf_loss)
+        loss_opt, loss, _, _, _ = model_step(batch, model, mlpf_loss, regression_weights)
 
     optimizer_step(model, loss_opt, optimizer, lr_schedule, scaler)
 
@@ -159,9 +170,13 @@ def train_step(
 
     # Log step metrics
     if tensorboard_writer is not None:
-        # log_open_files_to_tensorboard(tensorboard_writer, step)
+        log_open_files_to_tensorboard(tensorboard_writer, step)
+        log_gpu_utilization_to_tensorboard(tensorboard_writer, step)
         log_step_to_tensorboard(batch, loss["Total"], lr_schedule, tensorboard_writer, step)
         log_dataloader_to_tensorboard(loader_state_dict, tensorboard_writer, step)
+        if step % tensorboard_step_freq == 0:
+            log_gradients_to_tensorboard(model, tensorboard_writer, step)
+            log_residuals_to_tensorboard(model, tensorboard_writer, step)
         tensorboard_writer.flush()
 
     if comet_experiment is not None and (step % comet_step_freq == 0):
@@ -186,18 +201,168 @@ def train_step(
     return step_loss
 
 
+def compute_particle_quality_metrics(batch, ypred_particles, ytarget):
+    sum_pt_true_list = []
+    sum_pt_pred_list = []
+    sum_e_true_list = []
+    sum_e_pred_list = []
+    n_true_list = []
+    n_pred_list = []
+
+    for ev_idx in range(batch.X.shape[0]):
+        mask_ev = batch.mask[ev_idx].bool()
+        if not mask_ev.any():
+            continue
+
+        # True particles in this event (cls_id > 0)
+        cls_id_true = ytarget["cls_id"][ev_idx][mask_ev]
+        is_true_part = cls_id_true > 0
+        if is_true_part.any():
+            pt_true = (torch.exp(ytarget["pt"][ev_idx][mask_ev]) * batch.X[ev_idx, mask_ev, 1])[is_true_part]
+            e_true = (torch.exp(ytarget["energy"][ev_idx][mask_ev]) * batch.X[ev_idx, mask_ev, 5])[is_true_part]
+            sum_pt_true = pt_true.sum().item()
+            sum_e_true = e_true.sum().item()
+            n_true = is_true_part.sum().item()
+        else:
+            sum_pt_true = 0.0
+            sum_e_true = 0.0
+            n_true = 0
+
+        # Predicted particles in this event (cls_id > 0)
+        cls_id_pred = ypred_particles["cls_id"][ev_idx][mask_ev]
+        is_pred_part = cls_id_pred > 0
+        if is_pred_part.any():
+            pt_pred = ypred_particles["pt"][ev_idx][mask_ev][is_pred_part]
+            e_pred = ypred_particles["energy"][ev_idx][mask_ev][is_pred_part]
+            sum_pt_pred = pt_pred.sum().item()
+            sum_e_pred = e_pred.sum().item()
+            n_pred = is_pred_part.sum().item()
+        else:
+            sum_pt_pred = 0.0
+            sum_e_pred = 0.0
+            n_pred = 0
+
+        sum_pt_true_list.append(sum_pt_true)
+        sum_pt_pred_list.append(sum_pt_pred)
+        sum_e_true_list.append(sum_e_true)
+        sum_e_pred_list.append(sum_e_pred)
+        n_true_list.append(n_true)
+        n_pred_list.append(n_pred)
+
+    metrics = {
+        "sum_pt_true": float(np.mean(sum_pt_true_list)),
+        "sum_pt_pred": float(np.mean(sum_pt_pred_list)),
+        "sum_e_true": float(np.mean(sum_e_true_list)),
+        "sum_e_pred": float(np.mean(sum_e_pred_list)),
+        "n_true": float(np.mean(n_true_list)),
+        "n_pred": float(np.mean(n_pred_list)),
+    }
+
+    metrics["ratio_sum_pt"] = metrics["sum_pt_pred"] / (metrics["sum_pt_true"] + 1e-6)
+    metrics["ratio_sum_e"] = metrics["sum_e_pred"] / (metrics["sum_e_true"] + 1e-6)
+
+    return metrics
+
+
+def print_event_table(batch, ytarget, ypred_particles, config):
+    import pandas as pd
+    from tabulate import tabulate
+    from mlpf.conf import CLASS_LABELS
+    import numpy as np
+
+    # We only print the first event in the batch (index 0)
+    mask = batch.mask[0].bool().cpu()
+    valid_indices = torch.nonzero(mask).squeeze(1).numpy()
+
+    X = batch.X[0].cpu().numpy()
+
+    # Target values
+    tgt_cls = ytarget["cls_id"][0].cpu().numpy()
+    tgt_pt_raw = ytarget["pt"][0].cpu().numpy()
+    tgt_eta = ytarget["eta"][0].cpu().numpy()
+    tgt_sin_phi = ytarget["sin_phi"][0].cpu().numpy()
+    tgt_cos_phi = ytarget["cos_phi"][0].cpu().numpy()
+    tgt_energy_raw = ytarget["energy"][0].cpu().numpy()
+
+    # Prediction values
+    pred_cls = ypred_particles["cls_id"][0].cpu().numpy()
+    pred_pt = ypred_particles["pt"][0].cpu().numpy()
+    pred_eta = ypred_particles["eta"][0].cpu().numpy()
+    pred_phi = ypred_particles["phi"][0].cpu().numpy() if "phi" in ypred_particles else np.zeros_like(pred_pt)
+    pred_energy = ypred_particles["energy"][0].cpu().numpy()
+    pred_beta = ypred_particles["oc_beta"][0, :, 0].cpu().numpy() if "oc_beta" in ypred_particles else np.zeros_like(pred_pt)
+
+    # Class names mapping
+    dataset_name = config.dataset.value if hasattr(config.dataset, "value") else config.dataset
+    class_names = CLASS_LABELS.get(dataset_name, ["none", "chhad", "nhad", "gamma", "ele", "mu"])
+
+    rows = []
+    for idx in valid_indices:
+        hit_type = X[idx, 0]
+        hit_pt = X[idx, 1]
+        hit_eta = X[idx, 2]
+        hit_phi = np.arctan2(X[idx, 3], X[idx, 4])
+        hit_energy = X[idx, 5]
+
+        t_cls = int(tgt_cls[idx])
+        t_cls_name = class_names[t_cls] if t_cls < len(class_names) else str(t_cls)
+
+        # calculate physical target values
+        t_pt = np.exp(tgt_pt_raw[idx]) * hit_pt if t_cls > 0 else 0.0
+        t_eta = tgt_eta[idx] if t_cls > 0 else 0.0
+        t_phi = np.arctan2(tgt_sin_phi[idx], tgt_cos_phi[idx]) if t_cls > 0 else 0.0
+        t_energy = np.exp(tgt_energy_raw[idx]) * hit_energy if t_cls > 0 else 0.0
+
+        p_cls = int(pred_cls[idx])
+        p_cls_name = class_names[p_cls] if p_cls < len(class_names) else str(p_cls)
+
+        p_pt = pred_pt[idx]
+        p_eta = pred_eta[idx]
+        p_phi = pred_phi[idx]
+        p_energy = pred_energy[idx]
+        p_beta = pred_beta[idx]
+
+        rows.append(
+            {
+                "idx": idx,
+                "hit_type": int(hit_type),
+                "hit_pt": hit_pt,
+                "hit_eta": hit_eta,
+                "hit_phi": hit_phi,
+                "hit_energy": hit_energy,
+                "tgt_cls": t_cls_name,
+                "tgt_pt": t_pt,
+                "tgt_eta": t_eta,
+                "tgt_phi": t_phi,
+                "tgt_energy": t_energy,
+                "pred_cls": p_cls_name,
+                "pred_pt": p_pt,
+                "pred_eta": p_eta,
+                "pred_phi": p_phi,
+                "pred_energy": p_energy,
+                "pred_beta": p_beta,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    table_str = tabulate(df, headers="keys", tablefmt="pipe", showindex=False)
+    print("\n=== EVENT HITS / TARGET / PREDICTION TABLE ===")
+    print(table_str)
+    print("==============================================\n")
+
+
 def evaluate(
     rank: Union[int, str],
     world_size: int,
     model: MLPF,
     valid_loader,
     step: int,
+    config: MLPFConfig,
     tensorboard_writer=None,
     comet_experiment=None,
     outdir=None,
     device_type="cuda",
     dtype=torch.float32,
-    make_plots=False,
 ):
     """Run one evaluation step
 
@@ -207,6 +372,7 @@ def evaluate(
         model: The neural network model
         valid_loader: Validation data loader
         step: Current step number
+        config: Configuration object
         tensorboard_writer: TensorBoard writer object
         comet_experiment: Comet.ml experiment object
         outdir: Output directory path
@@ -235,11 +401,22 @@ def evaluate(
 
         with torch.autocast(device_type=device_type, dtype=dtype, enabled=device_type == "cuda"):
             with torch.no_grad():
-                _, loss, ypred_raw, ypred, ytarget = model_step(batch, model, mlpf_loss)
+                _, loss, ypred_raw, ypred, ytarget = model_step(
+                    batch,
+                    model,
+                    mlpf_loss,
+                    config.regression_loss_weights.model_dump(),
+                )
+
+                model_module = model.module if hasattr(model, "module") else model
+                ypred_particles = model_module.predict_particles(batch.X, batch.mask)
+
+                if ival == 0 and (rank == 0 or rank == "cpu"):
+                    print_event_table(batch, ytarget, ypred_particles, config)
 
         # Save validation plots for first batch
-        # if (rank == 0 or rank == "cpu") and ival == 0 and make_plots:
-        #     validation_plots(batch, ypred_raw, ytarget, ypred, tensorboard_writer, step, outdir)
+        if (rank == 0 or rank == "cpu") and ival == 0 and config.make_plots:
+            validation_plots(batch, ypred_raw, ytarget, ypred, tensorboard_writer, step, outdir)
 
         # Accumulate losses
         for loss_name in loss:
@@ -305,7 +482,8 @@ def _log_and_checkpoint_step(
                 "valid_loader_state_dict": valid_loader.state_dict(),
             }
 
-            checkpoint_path = f"{checkpoint_dir}/checkpoint-{step:02d}.pth"
+            checkpoint_path = (Path(checkpoint_dir) / f"checkpoint-{step:02d}.pth").resolve()
+            _logger.info("saving checkpoint {}".format(checkpoint_path))
             save_checkpoint(checkpoint_path, model, optimizer, extra_state)
 
             # Clean up old checkpoints, keeping the last num_patience
@@ -328,7 +506,7 @@ def _run_validation_cycle(
     best_val_loss,
     stale_steps,
     outdir,
-    config,
+    config: MLPFConfig,
     device_type,
     dtype,
     tensorboard_writer_valid,
@@ -354,12 +532,12 @@ def _run_validation_cycle(
         model=model,
         valid_loader=valid_loader,
         step=step,
+        config=config,
         tensorboard_writer=tensorboard_writer_valid,
         comet_experiment=comet_experiment,
         outdir=outdir,
         device_type=device_type,
         dtype=dtype,
-        make_plots=config["make_plots"],
     )
     log_memory("evaluate_end", rank, tensorboard_writer_valid, step)
     valid_time = time.time() - train_time - t0_initial
@@ -419,15 +597,15 @@ def _run_validation_cycle(
     # Run inference and plotting on test datasets for this step
     testdir_name = f"_step_{step}"
     log_memory("run_test_start", rank, tensorboard_writer_valid, step)
-    for sample in config["enabled_test_datasets"]:
+    for sample in config.enabled_test_datasets:
         run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtype)
     log_memory("run_test_end", rank, tensorboard_writer_valid, step)
 
     plot_metrics_sample = {}
     if (rank == 0) or (rank == "cpu"):
         log_memory("make_plots_start", rank, tensorboard_writer_valid, step)
-        for sample in config["enabled_test_datasets"]:
-            plot_metrics = make_plots(outdir, sample, config["dataset"], testdir_name, config["ntest"])
+        for sample in config.enabled_test_datasets:
+            plot_metrics = make_plots(outdir, sample, config.dataset, testdir_name, config.ntest)
             plot_metrics_sample[sample] = plot_metrics
             # Log key jet metrics to TensorBoard and CometML
             for k in ["med", "iqr", "match_frac"]:
@@ -453,6 +631,7 @@ def _run_validation_cycle(
             "loss": losses_train["Total"],
             "val_loss": losses_valid["Total"],
             "step": step,
+            "training_iteration": ((step - 1) // config.val_freq) + 1,
             **{f"train_{k}": v for k, v in losses_train.items()},
             **{f"valid_{k}": v for k, v in losses_valid.items()},
         }
@@ -495,7 +674,7 @@ def train_all_steps(
     num_steps,
     patience,
     outdir,
-    config,
+    config: MLPFConfig,
     trainable="all",
     dtype=torch.float32,
     start_step=1,
@@ -532,7 +711,9 @@ def train_all_steps(
     best_val_loss = float("inf")
 
     scaler = torch.amp.GradScaler()
+    _logger.info("Creating train_iterator")
     train_iterator = iter(train_loader)
+    _logger.info("Created train_iterator")
 
     # Use tqdm for progress bar only on the main process in an interactive session
     is_interactive = ((world_size <= 1) or (rank == 0)) and sys.stdout.isatty()
@@ -545,10 +726,13 @@ def train_all_steps(
         step_start_time = time.time()
 
         # Get next training batch
+        _logger.debug(f"Getting batch for step {step}")
         batch = next(train_iterator)
-        _logger.debug(f"rank={rank} batch={batch.X.shape}")
+        data_load_time = time.time() - step_start_time
+        _logger.debug(f"Got batch for step {step} rank={rank} batch={batch.X.shape}")
 
         # Run a single training step
+        model_forward_start = time.time()
         log_memory("train_step_start", rank, tensorboard_writer_train, step)
         losses_train = train_step(
             rank=rank,
@@ -561,20 +745,33 @@ def train_all_steps(
             tensorboard_writer=tensorboard_writer_train,
             comet_experiment=comet_experiment,
             comet_step_freq=comet_step_freq,
+            tensorboard_step_freq=config.tensorboard_step_freq,
             checkpoint_dir=checkpoint_dir,
             device_type=device_type,
             dtype=dtype,
             scaler=scaler,
             loader_state_dict=train_loader.state_dict()["loader_state_dict"],
+            regression_weights=config.regression_loss_weights.model_dump(),
         )
         log_memory("train_step_end", rank, tensorboard_writer_train, step)
+        model_forward_time = time.time() - model_forward_start
         train_time = time.time() - step_start_time
 
-        # Log a brief training status every 100 steps on the main process
-        if step % 100 == 0:
+        if tensorboard_writer_train is not None:
+            tensorboard_writer_train.add_scalar("step/time_data_load", data_load_time, step)
+            tensorboard_writer_train.add_scalar("step/time_model_forward", model_forward_time, step)
+
+        # Log a brief training status periodically on the main process
+        if step % config.tensorboard_step_freq == 0:
             # Get the current learning rate, handling the case of multiple parameter groups
             current_lr = lr_schedule.get_last_lr()[0]
-            _logger.info(f"Step {step}/{num_steps} rank{rank} | " f"Train Loss: {losses_train['Total']:.4f} | " f"LR: {current_lr:.2e}")
+            _logger.info(
+                f"Step {step}/{num_steps} rank{rank} | "
+                f"Train Loss: {losses_train['Total']:.4f} | "
+                f"LR: {current_lr:.2e} | "
+                f"DataLoad Time: {data_load_time:.4f}s | "
+                f"Model Forward Time: {model_forward_time:.4f}s"
+            )
 
             # check smi status
             log_smi(rank)
@@ -600,7 +797,7 @@ def train_all_steps(
             valid_loader,
             train_sampler,
             valid_sampler,
-            config["patience"],
+            config.patience,
         )
 
         # Run validation, testing, and plotting cycle at specified frequency, or at the last step
@@ -646,21 +843,30 @@ def train_all_steps(
         tensorboard_writer_valid.close()
 
 
-def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtype):
-    batch_size = config["test_dataset"][sample]["batch_size"] * config["gpu_batch_multiplier"]
-    version = config["test_dataset"][sample]["version"]
+def run_test(rank, world_size, config: MLPFConfig, outdir, model, sample, testdir_name, dtype):
+    batch_size = config.test_dataset[sample].batch_size * config.gpu_batch_multiplier
+    version = config.test_dataset[sample].version
 
-    split_configs = config["test_dataset"][sample]["splits"]
+    split_configs = config.test_dataset[sample].splits
     _logger.info("split_configs={}".format(split_configs))
 
     dataset = []
 
     ntest = None
-    if not (config["ntest"] is None):
-        ntest = config["ntest"] // len(split_configs)
+    split_configs_to_use = list(split_configs)
+    if config.ntest is not None:
+        if config.ntest < len(split_configs_to_use):
+            split_configs_to_use = split_configs_to_use[: config.ntest]
+        ntest = max(1, config.ntest // len(split_configs_to_use))
 
-    for split_config in split_configs:
-        ds = PFDataset(config["data_dir"], f"{sample}/{split_config}:{version}", "test", num_samples=ntest).ds
+    for split_config in split_configs_to_use:
+        ds = PFDataset(
+            config.data_dir,
+            f"{sample}/{split_config}:{version}",
+            "test",
+            num_samples=ntest,
+            pad_to_multiple=config.pad_to_multiple_elements,
+        ).ds
         dataset.append(ds)
     ds = torch.utils.data.ConcatDataset(dataset)
 
@@ -675,7 +881,7 @@ def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtyp
     vals_for_test = ["X", "ytarget", "ytarget_pt_orig", "ytarget_e_orig", "ycand", "genjets", "targetjets"]
 
     # pythia branch was introduced for cms in version 2.8.0
-    if sample.startswith("cms_") and Version(version) >= Version("2.8.0"):
+    if sample.startswith("cms_") and version and Version(version) >= Version("2.8.0"):
         vals_for_test += ["pythia"]
 
     test_loader = torch.utils.data.DataLoader(
@@ -683,8 +889,8 @@ def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtyp
         batch_size=batch_size,
         collate_fn=Collater(vals_for_test, ["genmet"]),
         sampler=sampler,
-        num_workers=config["num_workers"],
-        prefetch_factor=config["prefetch_factor"],
+        num_workers=config.num_workers,
+        prefetch_factor=config.prefetch_factor,
         # pin_memory=use_cuda,
         # pin_memory_device="cuda:{}".format(rank) if use_cuda else "",
     )
@@ -696,19 +902,7 @@ def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtyp
     _logger.info(f"Running predictions on {sample}")
     torch.cuda.empty_cache()
 
-    # FIXME: import this from a central place
-    if config["dataset"] == "clic":
-        import fastjet
-
-        jetdef = fastjet.JetDefinition(fastjet.ee_genkt_algorithm, 0.4, -1.0)
-        jet_ptcut = 5
-    elif config["dataset"] in ("cms", "cms_ticl"):
-        import fastjet
-
-        jetdef = fastjet.JetDefinition(fastjet.antikt_algorithm, 0.4)
-        jet_ptcut = 3
-    else:
-        raise Exception("not implemented")
+    jetdef, jet_ptcut, jet_match_dr = get_jet_config(config.dataset)
 
     device_type = "cuda" if isinstance(rank, int) else "cpu"
     with torch.autocast(device_type=device_type, dtype=dtype, enabled=device_type == "cuda"):
@@ -721,21 +915,20 @@ def run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtyp
             outdir,
             jetdef,
             jet_ptcut=jet_ptcut,
-            jet_match_dr=0.1,
+            jet_match_dr=jet_match_dr,
             dir_name=testdir_name,
         )
     if world_size > 1:
         dist.barrier()  # block until all workers finished executing run_predictions()
 
 
-#def run(rank: int | str, world_size: int, config: dict, outdir: str, logfile: str):
-def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfile: str):
+def run(rank: int | str, world_size: int, config: MLPFConfig, outdir: str, logfile: str, loglevel: int = logging.INFO):
     # per-rank log
-    _configLogger("mlpf", rank, filename=f"{logfile}.{rank}")
+    _configLogger("mlpf", rank, filename=f"{logfile}.{rank}", loglevel=loglevel)
 
     use_cuda = rank != "cpu"
 
-    dtype = getattr(torch, config["dtype"])
+    dtype = getattr(torch, config.dtype)
     _logger.info("configured dtype={} for autocast".format(dtype))
 
     if world_size > 1:
@@ -747,31 +940,26 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
     if (rank == 0) | (rank == "cpu"):
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    model_kwargs = {
-        "input_dim": len(X_FEATURES[config["dataset"]]),
-        "num_classes": len(CLASS_LABELS[config["dataset"]]),
-        "input_encoding": config["model"]["input_encoding"],
-        "pt_mode": config["model"]["pt_mode"],
-        "eta_mode": config["model"]["eta_mode"],
-        "sin_phi_mode": config["model"]["sin_phi_mode"],
-        "cos_phi_mode": config["model"]["cos_phi_mode"],
-        "energy_mode": config["model"]["energy_mode"],
-        "elemtypes_nonzero": ELEM_TYPES_NONZERO[config["dataset"]],
-        "learned_representation_mode": config["model"]["learned_representation_mode"],
-        **config["model"][config["conv_type"]],
-    }
-
     start_step = 1
     lr_schedule = None
     checkpoint = None
 
     # load a pre-trained checkpoint (continue an aborted training or fine-tune)
-    if config["load"]:
-        model = MLPF(**model_kwargs).to(torch.device(rank))
-        optimizer = get_optimizer(model, config)
-        lr_schedule = get_lr_schedule(config, optimizer, config["num_steps"])
+    _logger.info("Instantiating model")
+    model = MLPF(config)
+    _logger.info("Instantiated model")
 
-        checkpoint = torch.load(config["load"], map_location=torch.device(rank))
+    _logger.info("Moving model to device rank={}".format(rank))
+    model = model.to(torch.device(rank))
+    _logger.info("Moved model to device rank={}".format(rank))
+
+    configure_model_trainable(model, config.model.trainable, True)
+
+    optimizer = get_optimizer(model, config)
+    lr_schedule = get_lr_schedule(config, optimizer, config.num_steps)
+
+    if config.load:
+        checkpoint = torch.load(config.load, map_location=torch.device(rank))
         start_step = checkpoint["extra_state"]["step"] + 1
 
         missing_keys, strict = [], True
@@ -787,35 +975,28 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
 
         if len(missing_keys) > 0:
             _logger.warning(f"The following parameters are missing in the checkpoint file {missing_keys}", color="red")
-            if config.get("relaxed_load", True):
+            if config.relaxed_load:
                 _logger.warning("Optimizer checkpoint will not be loaded", color="bold")
                 strict = False
             else:
                 _logger.warning("Use option --relaxed-load if you insist to ignore the missing parameters")
                 raise KeyError
 
-        _logger.info("Loaded model weights from {}".format(config["load"]), color="bold")
+        _logger.info("Loaded model weights from {}".format(config.load), color="bold")
         _logger.info(f"Restoring training from step {start_step}")
 
         load_lr_schedule(lr_schedule, checkpoint, start_step=start_step)
         model, optimizer = load_checkpoint(checkpoint, model, optimizer, strict)
 
-    else:  # instantiate a new model in the outdir created
-        model = MLPF(**model_kwargs)
-        optimizer = get_optimizer(model, config)
-        lr_schedule = get_lr_schedule(config, optimizer, config["num_steps"])
-
-    model.to(rank)
-    # CPU: the compilation does not work with bs>1
-    # Nvidia: compilation should generally be used, but can be disabled
-    # ROCM: compilation seems to be needed for ROCm to work properly
-    if rank != "cpu":
-        model.compile()
-    configure_model_trainable(model, config["model"]["trainable"], True)
+    if config.compile:
+        _logger.info("Compiling model")
+        model = torch.compile(model)
 
     if world_size > 1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        _logger.info("Configured model for SyncBatchNorm rank={}".format(rank))
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+        _logger.info("Configured model for DistributedDataParallel rank={}".format(rank))
 
     trainable_params, nontrainable_params, table = count_parameters(model)
     _logger.info(str(table))
@@ -825,20 +1006,20 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
     _logger.info(f"Total parameters: {trainable_params + nontrainable_params}")
     _logger.info(table.to_string(index=False))
 
-    if config["train"]:
+    if config.train:
         if (rank == 0) or (rank == "cpu"):
-            save_HPs(config, model, model_kwargs, outdir)  # save model_kwargs and hyperparameters
+            save_HPs(config, model, outdir)  # save config and hyperparameters
             _logger.info("Creating experiment dir {}".format(outdir))
             _logger.info(f"Model directory {outdir}", color="bold")
 
-        if config["comet"]:
-            comet_experiment = create_comet_experiment(config["comet_name"], comet_offline=config["comet_offline"], outdir=outdir)
+        if config.comet:
+            comet_experiment = create_comet_experiment(config.comet_name, comet_offline=config.comet_offline, outdir=outdir)
             if comet_experiment is not None:
                 comet_experiment.set_name(f"rank_{rank}_{Path(outdir).name}")
                 comet_experiment.log_parameter("run_id", Path(outdir).name)
                 comet_experiment.log_parameter("world_size", world_size)
                 comet_experiment.log_parameter("rank", rank)
-                comet_experiment.log_parameters(config, prefix="config:")
+                comet_experiment.log_parameters(config.model_dump(mode="json"), prefix="config:")
                 comet_experiment.set_model_graph(model)
                 comet_experiment.log_parameter(trainable_params, "trainable_params")
                 comet_experiment.log_parameter(nontrainable_params, "nontrainable_params")
@@ -850,11 +1031,12 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
                 # save overridden config, then log to comet
                 config_filename = "overridden_config.yaml"
                 with open((Path(outdir) / config_filename), "w") as file:
-                    yaml.dump(config, file)
+                    yaml.dump(config.model_dump(mode="json"), file)
                 comet_experiment.log_code(str(Path(outdir) / config_filename))
         else:
             comet_experiment = None
 
+        _logger.info("Getting dataloaders")
         loaders, samplers = get_interleaved_dataloaders(
             world_size,
             rank,
@@ -862,17 +1044,19 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
             use_cuda,
             use_ray=False,
         )
+        _logger.info("Got dataloaders")
 
-        if config["load"] and checkpoint:
+        if config.load and checkpoint:
             train_loader = loaders["train"]
             valid_loader = loaders["valid"]
-            if "train_loader_state_dict" in checkpoint["extra_state"]:
-                train_loader.load_state_dict(checkpoint["extra_state"]["train_loader_state_dict"])
-            if "valid_loader_state_dict" in checkpoint["extra_state"]:
-                valid_loader.load_state_dict(checkpoint["extra_state"]["valid_loader_state_dict"])
+            if not config.sampler_from_scratch:
+                if "train_loader_state_dict" in checkpoint["extra_state"]:
+                    train_loader.load_state_dict(checkpoint["extra_state"]["train_loader_state_dict"])
+                if "valid_loader_state_dict" in checkpoint["extra_state"]:
+                    valid_loader.load_state_dict(checkpoint["extra_state"]["valid_loader_state_dict"])
 
         for split in loaders.keys():
-            _logger.info("loader {} rank={} len={}".format(split, rank, len(loaders[split])))
+            _logger.info("loader split={} rank={} len={}".format(split, rank, len(loaders[split])))
 
         train_all_steps(
             rank,
@@ -881,68 +1065,48 @@ def run(rank: Union[int, str], world_size: int, config: dict, outdir: str, logfi
             optimizer,
             loaders["train"],
             loaders["valid"],
-            config["num_steps"],
-            config["patience"],
+            config.num_steps,
+            config.patience,
             outdir,
             config,
-            trainable=config["model"]["trainable"],
+            trainable=config.model.trainable,
             dtype=dtype,
             start_step=start_step,
             lr_schedule=lr_schedule,
             use_ray=False,
-            checkpoint_freq=config["checkpoint_freq"],
+            checkpoint_freq=config.checkpoint_freq,
             comet_experiment=comet_experiment,
-            comet_step_freq=config["comet_step_freq"],
-            val_freq=config["val_freq"],
+            comet_step_freq=config.comet_step_freq,
+            val_freq=config.val_freq,
             checkpoint_dir=str(checkpoint_dir),
             train_sampler=samplers["train"],
             valid_sampler=samplers["valid"],
         )
 
+    if not config.train and config.test:
+        _logger.info("Entering test step block (train=False, test=True)")
+        testdir_name = "_test"
+        for sample in config.enabled_test_datasets:
+            run_test(rank, world_size, config, outdir, model, sample, testdir_name, dtype)
+
+        if (rank == 0) or (rank == "cpu"):
+            for sample in config.enabled_test_datasets:
+                make_plots(outdir, sample, config.dataset, testdir_name, config.ntest)
+
     if world_size > 1:
+        dist.barrier()
         dist.destroy_process_group()
 
 
-def override_config(config: dict, args):
-    """override config dictionary with values from argparse Namespace"""
-    for arg in vars(args):
-        arg_value = getattr(args, arg)
-        if arg_value is not None:
-            if arg in config:
-                _logger.info("overriding config item {}={} with {} from cmdline".format(arg, config[arg], arg_value))
-                config[arg] = arg_value
-            else:
-                _logger.info("skipping {}".format(arg))
-
-    if "attention_type" in args and args.attention_type is not None:
-        config["model"]["attention"]["attention_type"] = args.attention_type
-
-    if "num_convs" in args and args.num_convs is not None:
-        for model in ["gnn_lsh", "attention"]:
-            config["model"][model]["num_convs"] = args.num_convs
-
-    config["enabled_test_datasets"] = list(config["test_dataset"].keys())
-    if "test_datasets" in args:
-        if len(args.test_datasets) != 0:
-            config["enabled_test_datasets"] = args.test_datasets
-
-    config["train"] = args.train
-    config["test"] = args.test
-    if "make_plots" in args:
-        config["make_plots"] = args.make_plots
-
-    return config
-
-
 # Run either single GPU or single-node multi-GPU using pytorch DDP
-def device_agnostic_run(config, world_size, outdir):
-    if config["train"]:
+def device_agnostic_run(config: MLPFConfig, world_size, outdir, loglevel: int = logging.INFO):
+    if config.train:
         logfile = f"{outdir}/train.log"
     else:
         logfile = f"{outdir}/test.log"
-    _configLogger("mlpf", 0, filename=logfile)
+    _configLogger("mlpf", 0, filename=logfile, loglevel=loglevel)
 
-    if config["gpus"]:
+    if config.gpus:
         assert (
             world_size <= torch.cuda.device_count()
         ), f"--gpus is too high (specified {world_size} gpus but only {torch.cuda.device_count()} gpus are available)"
@@ -953,18 +1117,20 @@ def device_agnostic_run(config, world_size, outdir):
             for rank in range(world_size):
                 _logger.info(torch.cuda.get_device_name(rank), color="purple")
 
+            _logger.info("Spawning DDP processes")
             mp.spawn(
                 run,
-                args=(world_size, config, outdir, logfile),
+                args=(world_size, config, outdir, logfile, loglevel),
                 nprocs=world_size,
                 join=True,
             )
         elif world_size == 1:
             rank = 0
             _logger.info(f"Will use single-gpu: {torch.cuda.get_device_name(rank)}", color="purple")
-            run(rank, world_size, config, outdir, logfile)
+            _logger.info(f"Calling run(rank={rank}, world_size={world_size}, ...)")
+            run(rank, world_size, config, outdir, logfile, loglevel)
 
     else:
         rank = "cpu"
         _logger.info("Will use cpu", color="purple")
-        run(rank, world_size, config, outdir, logfile)
+        run(rank, world_size, config, outdir, logfile, loglevel)

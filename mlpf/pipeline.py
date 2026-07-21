@@ -215,7 +215,7 @@ def main():
 
     # Load Spec and Build Config using the new Pydantic-based system
     config_obj = MLPFConfig.from_spec(args.spec_file, args.model_name, args.production_name, args, extra_args)
-    config = config_obj.model_dump()
+    config = config_obj
 
     print("Final configuration (dot-notation):")
     flat_config = config_obj.flatten_config()
@@ -249,7 +249,7 @@ def main():
             run_ray_training(config, args, experiment_dir, loglevel=loglevel)
         elif cmd in [Command.TRAIN, Command.TEST]:
             world_size = config_obj.gpus if config_obj.gpus > 0 else 1
-            device_agnostic_run(config_obj, world_size, experiment_dir, loglevel=loglevel)
+            device_agnostic_run(config_obj, world_size, experiment_dir)
 
 
 if __name__ == "__main__":

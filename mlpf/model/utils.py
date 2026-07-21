@@ -6,201 +6,11 @@ import torch
 import torch.utils.data
 from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingLR, ConstantLR
 import logging
-
-# https://github.com/ahlinist/cmssw/blob/1df62491f48ef964d198f574cdfcccfd17c70425/DataFormats/ParticleFlowReco/interface/PFBlockElement.h#L33
-# https://github.com/cms-sw/cmssw/blob/master/DataFormats/ParticleFlowCandidate/src/PFCandidate.cc#L254
-
-# All possible PFElement types
-ELEM_TYPES = {
-    "cms": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-    "clic": [0, 1, 2],
-    "cms_ticl": [0, 1, 2, 3, 4],  # typ_idx values after TFDS remapping (4=GSF track)
-}
-
-# Some element types are defined, but do not exist in the dataset at all
-ELEM_TYPES_NONZERO = {
-    "cms": [1, 4, 5, 6, 8, 9, 10, 11],
-    "clic": [1, 2],
-    "cms_ticl": [1, 2, 3, 4],  # typ_idx values after TFDS remapping
-}
-
-CLASS_LABELS = {
-    "cms": [0, 211, 130, 1, 2, 22, 11, 13, 15],  # we never actually predict 15/taus (not there in targets)
-    "clic": [0, 211, 130, 22, 11, 13],
-    "clic_hits": [0, 211, 130, 22, 11, 13],
-    "cms_ticl": [0, 211, 130, 22, 11, 13],
-}
-
-CLASS_NAMES_LATEX = {
-    "cms": ["none", "Charged Hadron", "Neutral Hadron", "HFEM", "HFHAD", r"$\gamma$", r"$e^\pm$", r"$\mu^\pm$", r"$\tau$"],
-    "clic": ["none", "Charged Hadron", "Neutral Hadron", r"$\gamma$", r"$e^\pm$", r"$\mu^\pm$"],
-    "clic_hits": ["none", "Charged Hadron", "Neutral Hadron", r"$\gamma$", r"$e^\pm$", r"$\mu^\pm$"],
-    "cms_ticl": ["none", "Charged Hadron", "Neutral Hadron", r"$\gamma$", r"$e^\pm$", r"$\mu^\pm$"],
-}
-CLASS_NAMES = {
-    "cms": ["none", "chhad", "nhad", "HFEM", "HFHAD", "gamma", "ele", "mu", "tau"],
-    "clic": ["none", "chhad", "nhad", "gamma", "ele", "mu"],
-    "clic_hits": ["none", "chhad", "nhad", "gamma", "ele", "mu"],
-    "cms_ticl": ["none", "chhad", "nhad", "gamma", "ele", "mu"],
-}
-CLASS_NAMES_CAPITALIZED = {
-    "cms": ["none", "Charged hadron", "Neutral hadron", "HFEM", "HFHAD", "Photon", "Electron", "Muon", "Tau"],
-    "clic": ["none", "Charged hadron", "Neutral hadron", "Photon", "Electron", "Muon"],
-    "clic_hits": ["none", "Charged hadron", "Neutral hadron", "Photon", "Electron", "Muon"],
-    "cms_ticl": ["none", "Charged hadron", "Neutral hadron", "Photon", "Electron", "Muon"],
-}
-
-X_FEATURES = {
-    "cms": [
-        "typ_idx",
-        "pt",
-        "eta",
-        "sin_phi",
-        "cos_phi",
-        "e",
-        "layer",
-        "depth",
-        "charge",
-        "trajpoint",
-        "eta_ecal",
-        "phi_ecal",
-        "eta_hcal",
-        "phi_hcal",
-        "muon_dt_hits",
-        "muon_csc_hits",
-        "muon_type",
-        "px",
-        "py",
-        "pz",
-        "deltap",
-        "sigmadeltap",
-        "gsf_electronseed_trkorecal",
-        "gsf_electronseed_dnn1",
-        "gsf_electronseed_dnn2",
-        "gsf_electronseed_dnn3",
-        "gsf_electronseed_dnn4",
-        "gsf_electronseed_dnn5",
-        "num_hits",
-        "cluster_flags",
-        "corr_energy",
-        "corr_energy_err",
-        "vx",
-        "vy",
-        "vz",
-        "pterror",
-        "etaerror",
-        "phierror",
-        "lambd",
-        "lambdaerror",
-        "theta",
-        "thetaerror",
-        "time",
-        "timeerror",
-        "etaerror1",
-        "etaerror2",
-        "etaerror3",
-        "etaerror4",
-        "phierror1",
-        "phierror2",
-        "phierror3",
-        "phierror4",
-        "sigma_x",
-        "sigma_y",
-        "sigma_z",
-    ],
-    "cms_ticl": [
-        "typ_idx",
-        "pt",
-        "eta",
-        "sin_phi",
-        "cos_phi",
-        "energy",
-        "charge",
-        "px",
-        "py",
-        "pz",
-        "em_energy",
-        "bary_z",
-        "nhits",
-        "min_dR_track",
-        "near_track_pt",
-        "shower_depth",
-        "sum_pt_dR10",
-        "n_trk_dR01",
-        "n_trk_dR02",
-        "n_trk_dR03",
-        "n_trk_dR04",
-        "n_trk_dR05",
-        # new trackster features
-        "n_clusters",
-        # new track features
-        "track_muon_type",
-        "track_muon_dt_hits",
-        "track_muon_csc_hits",
-        "track_gsf_type",
-        "track_pt_err",
-        "track_eta_err",
-        "track_phi_err",
-        "track_lambda_err",
-        "track_qoverp_err",
-        "track_vx",
-        "track_vy",
-        "track_vz",
-    ],
-    "clic": [
-        "type",
-        "pt | et",
-        "eta",
-        "sin_phi",
-        "cos_phi",
-        "p | energy",
-        "chi2 | position.x",
-        "ndf | position.y",
-        "dEdx | position.z",
-        "dEdxError | iTheta",
-        "radiusOfInnermostHit | energy_ecal",
-        "tanLambda | energy_hcal",
-        "D0 | energy_other",
-        "omega | num_hits",
-        "Z0 | sigma_x",
-        "time | sigma_y",
-        "Null | sigma_z",
-    ],
-    "clic_hits": [
-        "elemtype",
-        "pt | et",
-        "eta",
-        "sin_phi",
-        "cos_phi",
-        "p | energy",
-        "chi2 | position.x",
-        "ndf | position.y",
-        "dEdx | position.z",
-        "dEdxError | time",
-        "radiusOfInnermostHit | subdetector",
-        "tanLambda | type",
-        "D0 | Null",
-        "omega | Null",
-        "Z0 | Null",
-        "time | Null",
-    ],
-}
-
-Y_FEATURES = [
-    "PDG",
-    "charge",
-    "pt",
-    "eta",
-    "sin_phi",
-    "cos_phi",
-    "energy",
-    "ispu",
-    "generatorStatus",
-    "simulatorStatus",
-    "gp_to_track",
-    "gp_to_cluster",
-    "jet_idx",
-]
+from mlpf.conf import (
+    MLPFConfig,
+    Y_FEATURES,
+    LRSchedule,
+)
 
 
 def unpack_target(y, model):
@@ -209,6 +19,8 @@ def unpack_target(y, model):
     ret["charge"] = torch.clamp((y[..., 1] + 1).to(dtype=torch.float32), 0, 2)  # -1, 0, 1 -> 0, 1, 2
 
     for i, feat in enumerate(Y_FEATURES):
+        if i >= y.shape[-1]:
+            break
         if i >= 2:  # skip the cls and charge as they are defined above
             ret[feat] = y[..., i].to(dtype=torch.float32)
     ret["phi"] = torch.atan2(ret["sin_phi"], ret["cos_phi"])
@@ -226,7 +38,7 @@ def unpack_target(y, model):
     return ret
 
 
-
+# @torch.compile
 def unpack_predictions(preds):
     ret = {}
     ret["cls_binary"], ret["cls_id_onehot"], ret["momentum"], ret["ispu"] = preds
@@ -242,6 +54,7 @@ def unpack_predictions(preds):
     ret["cls_id"] = torch.argmax(ret["cls_binary"], dim=-1)
     # when a particle was predicted, get the particle ID
     ret["cls_id"][ret["cls_id"] == 1] = torch.argmax(ret["cls_id_onehot"], dim=-1)[ret["cls_id"] == 1]
+
     # get the predicted particle ID
     # ret["cls_id"] = torch.argmax(ret["cls_id_onehot"], dim=-1)
 
@@ -258,17 +71,17 @@ def unpack_predictions(preds):
     return ret
 
 
-def save_HPs(config, mlpf, model_kwargs, outdir):
+def save_HPs(config: MLPFConfig, mlpf, outdir):
     """Simple function to store the model parameters and training hyperparameters."""
 
-    with open(f"{outdir}/model_kwargs.pkl", "wb") as f:  # dump model architecture
-        pkl.dump(model_kwargs, f, protocol=pkl.HIGHEST_PROTOCOL)
+    with open(f"{outdir}/model_kwargs.pkl", "wb") as f:
+        pkl.dump(config, f, protocol=pkl.HIGHEST_PROTOCOL)
 
     num_mlpf_parameters = sum(p.numel() for p in mlpf.parameters() if p.requires_grad)
 
     with open(f"{outdir}/hyperparameters.json", "w") as fp:  # dump hyperparameters
         outdict = {"num_mlpf_params": num_mlpf_parameters}
-        outdict.update(config)
+        outdict.update(config.model_dump(mode="json"))
         json.dump(outdict, fp)
 
 
@@ -303,16 +116,24 @@ def print_optimizer_stats(optimizer, stage):
 
 
 def load_checkpoint(checkpoint, model, optimizer, strict=True, start_step=0):
+    logging.info(f"Loading checkpoint with strict={strict}")
     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-        model.module.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+        msg = model.module.load_state_dict(checkpoint["model_state_dict"], strict=strict)
     else:
-        model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+        msg = model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+
+    if len(msg.missing_keys) > 0:
+        logging.warning(f"Missing keys in model state dict: {msg.missing_keys}")
+    if len(msg.unexpected_keys) > 0:
+        logging.warning(f"Unexpected keys in model state dict: {msg.unexpected_keys}")
 
     if strict:
         print_optimizer_stats(optimizer, "Before loading optimizer state")
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         logging.info("Loaded optimizer state")
         print_optimizer_stats(optimizer, "After loading optimizer state")
+    else:
+        logging.info("Skipping optimizer state loading because strict=False")
 
     if "rng_state" in checkpoint["extra_state"]:
         torch.set_rng_state(checkpoint["extra_state"]["rng_state"].cpu())
@@ -345,33 +166,33 @@ def load_lr_schedule(lr_schedule, checkpoint, start_step=0):
         raise KeyError("Couldn't find LR schedule state dict in checkpoint. extra_state contains: {}".format(checkpoint["extra_state"].keys()))
 
 
-def get_lr_schedule(config, opt, num_steps, last_batch=-1):
-    if config["lr_schedule"] == "constant":
+def get_lr_schedule(config: MLPFConfig, opt, num_steps, last_batch=-1):
+    if config.lr_schedule == LRSchedule.CONSTANT:
         lr_schedule = ConstantLR(opt, factor=1.0, total_iters=num_steps)
-    elif config["lr_schedule"] == "onecycle":
+    elif config.lr_schedule == LRSchedule.ONECYCLE:
         lr_schedule = OneCycleLR(
             opt,
-            max_lr=config["lr"],
+            max_lr=config.lr,
             total_steps=num_steps,
             last_epoch=last_batch,
-            pct_start=config["lr_schedule_config"]["onecycle"]["pct_start"] or 0.3,
+            pct_start=config.lr_schedule_config.get("onecycle", {}).get("pct_start") or 0.3,
         )
-    elif config["lr_schedule"] == "cosinedecay":
-        lr_schedule = CosineAnnealingLR(opt, T_max=num_steps, last_epoch=last_batch, eta_min=config["lr"] * 0.1)
-    elif config["lr_schedule"] == "reduce_lr_on_plateau":
+    elif config.lr_schedule == LRSchedule.COSINEDECAY:
+        lr_schedule = CosineAnnealingLR(opt, T_max=num_steps, last_epoch=last_batch, eta_min=config.lr * 0.1)
+    elif config.lr_schedule == LRSchedule.REDUCE_LR_ON_PLATEAU:
         lr_schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt,
-            mode=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("mode", "min"),
-            factor=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("factor", 0.1),
-            patience=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("patience", 10),
-            threshold=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("threshold", 1e-4),
-            threshold_mode=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("threshold_mode", "rel"),
-            cooldown=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("cooldown", 0),
-            min_lr=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("min_lr", 0),
-            eps=config["lr_schedule_config"]["reduce_lr_on_plateau"].get("eps", 1e-8),
+            mode=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("mode", "min"),
+            factor=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("factor", 0.1),
+            patience=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("patience", 10),
+            threshold=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("threshold", 1e-4),
+            threshold_mode=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("threshold_mode", "rel"),
+            cooldown=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("cooldown", 0),
+            min_lr=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("min_lr", 0),
+            eps=config.lr_schedule_config.get("reduce_lr_on_plateau", {}).get("eps", 1e-8),
         )
     else:
-        raise ValueError("Supported values for lr_schedule are 'constant', 'onecycle' and 'cosinedecay'.")
+        raise ValueError(f"Supported values for lr_schedule are {list(LRSchedule)}")
     return lr_schedule
 
 

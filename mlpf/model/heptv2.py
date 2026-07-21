@@ -187,10 +187,10 @@ def batched_index_select(values: torch.Tensor, indices: torch.Tensor) -> torch.T
 
 def sort_to_buckets(x, perm, bucketsz):
     if _HEPTV2_DIRECT_BUCKET_GATHER:
-        num_hashes = int(perm.shape[0])
-        num_heads = int(perm.shape[1])
-        seq_len = int(perm.shape[2])
-        head_dim = int(x.shape[-1])
+        num_hashes = perm.shape[0]
+        num_heads = perm.shape[1]
+        seq_len = perm.shape[2]
+        head_dim = x.shape[-1]
         gathered = (
             x.unsqueeze(0)
             .expand(num_hashes, -1, -1, -1)

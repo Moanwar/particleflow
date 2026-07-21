@@ -350,6 +350,12 @@ JET_CONFIG = {
         "ptcut": 3.0,
         "match_dr": 0.1,
     },
+    Dataset.CMS_TICL.value: {
+        "algo": "antikt_algorithm",
+        "r": 0.4,
+        "ptcut": 3.0,
+        "match_dr": 0.1,
+    },
     Dataset.CLIC.value: {
         "algo": "ee_genkt_algorithm",
         "r": 0.4,

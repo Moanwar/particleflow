@@ -215,6 +215,13 @@ productions:
         version: "3.2.0"
         config_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
+  # CMS TICL Production (Phase-2 HGCAL endcap)
+  cms_ticl:
+    type: "cms_ticl"
+    model: "pyg-cms-ticl-v1"
+    comment: "TICL trackster-based PF for Phase-2 HGCAL"
+    workspace_dir: "/cms/data/store/user/moanwar/mlpf_data"
+
   # CLD Production
   cld:
     type: "key4hep"
@@ -408,13 +415,13 @@ models:
     lr_schedule: cosinedecay
     dtype: bfloat16
     load: null
-    num_steps: 100000
+    num_steps: 2000000
     comet: false
     comet_step_freq: 10000
     tensorboard_step_freq: 100
     ntrain: null #use full train dataset for training
     nvalid: null #use full valid dataset for validation
-    ntest: 100 #do test on a small subset
+    ntest: 50000 #do test on a small subset
     sort_data: false
     num_workers: 2
     prefetch_factor: 2
@@ -531,6 +538,47 @@ models:
         num_heads: 16
 
   # Example: CLD Model
+  pyg-cms-ticl-v1:
+    <<: *defaults
+    dataset: cms_ticl
+    gpu_batch_multiplier: 32
+    pad_to_multiple_elements: 200
+    num_steps: 200000
+    hyperparameters:
+      batch_size: 4
+      lr: 0.0004
+    architecture:
+      type: "heptv2"
+      input_encoding: "split"
+      heptv2:
+        num_convs: 3
+        num_heads: 8
+        embedding_dim: 128
+        width: 512
+        block_size: 100
+    train_datasets:
+      physical_nopu:
+        batch_size: 4
+        samples:
+          - name: "cms_pf_ticl_nopu"
+            version: "2.0.0"
+            splits: ["1","2","3","4","5","6","7","8","9","10",
+                     "11","12","13","14","15","16","17","18","19","20",
+                     "21","22","23","24","25","26","27","28","29","30",
+                     "31","32","33","34","35","36","37","38","39","40",
+                     "41","42","43","44","45","46","47","48","49","50"]
+    validation_datasets:
+      physical_nopu:
+        batch_size: 1
+        samples:
+          - name: "cms_pf_ticl_nopu"
+            version: "2.0.0"
+            splits: ["1","2","3","4","5","6","7","8","9","10"]
+    test_datasets:
+      - name: "cms_pf_ticl_nopu"
+        version: "2.0.0"
+        splits: ["1","2","3","4","5","6","7","8","9","10"]
+
   pyg-cld-v1:
     <<: *defaults
     dataset: cld

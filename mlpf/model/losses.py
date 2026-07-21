@@ -25,147 +25,137 @@ def _mask_no_target_regression(y, ypred):
 
 
 def sliced_wasserstein_loss(y_pred, y_true, num_projections=200):
+    # create normalized random basis vectors
     theta = torch.randn(num_projections, y_true.shape[-1]).to(device=y_true.device)
     theta = theta / torch.sqrt(torch.sum(theta**2, dim=1, keepdims=True))
+
+    # project the features with the random basis
     A = torch.matmul(y_true, torch.transpose(theta, -1, -2))
     B = torch.matmul(y_pred, torch.transpose(theta, -1, -2))
+
     A_sorted = torch.sort(A, dim=-2).values
     B_sorted = torch.sort(B, dim=-2).values
+
     ret = torch.sqrt(torch.sum(torch.pow(A_sorted - B_sorted, 2), dim=[-1, -2]))
     return ret
 
 
-def mlpf_loss(y, ypred, batch):
-    loss = {}
+def classification_loss(y, ypred):
+    """Compute per-element particle-presence and particle-ID losses."""
+    cls_id = y["cls_id"]
+    num_elements = cls_id.numel()
+    is_particle = cls_id != 0
 
-    pid_class_weights = torch.tensor(
-        [1.0, 4.0, 6.0, 4.0, 9.0, 9.0],
-        # none  ch   nhad  gam  ele   mu  (log-scaled inverse-freq, measured on ttbar+zll)
-        dtype=torch.float32,
-        device=ypred["cls_id_onehot"].device
-    )
-    loss_obj_id = FocalLoss(alpha=pid_class_weights, gamma=2.0, reduction="none")
+    binary = 10.0 * F.cross_entropy(ypred["cls_binary"], is_particle.long())
 
-    msk_true_particle = torch.unsqueeze((y["cls_id"] != 0).to(dtype=torch.float32), dim=-1)
-    nelem = torch.sum(batch.mask)
-    npart = torch.sum(y["cls_id"] != 0)
+    pid_per_element = FocalLoss(gamma=2.0, reduction="none")(ypred["cls_id_onehot"], cls_id)
+    pid_per_element = torch.where(is_particle, pid_per_element, torch.zeros_like(pid_per_element))
+    pid = pid_per_element.sum() / num_elements
 
-    ypred["momentum"] = ypred["momentum"] * msk_true_particle
-    y["momentum"] = y["momentum"] * msk_true_particle
+    return {
+        "Classification_binary": binary,
+        "Classification": pid,
+    }
 
-    ypred["cls_binary"] = ypred["cls_binary"].permute((0, 2, 1))
-    ypred["cls_id_onehot"] = ypred["cls_id_onehot"].permute((0, 2, 1))
 
-    loss_binary_classification = 10.0 * torch.nn.functional.cross_entropy(
-        ypred["cls_binary"],
-        (y["cls_id"] != 0).long(),
-        reduction="none"
-    )
-    is_track_bin  = (batch.X[:, :, 0] == 1) | (batch.X[:, :, 0] == 4)  # typ=1 track + typ=4 GSF track
-    is_had_ts_bin = (batch.X[:, :, 0] == 3)
-    binary_boost = torch.ones_like(loss_binary_classification)
-    binary_boost = torch.where(
-        is_track_bin & (y["cls_id"] != 0),
-        torch.full_like(binary_boost, 6.0),
-        binary_boost
-    )
-    binary_boost = torch.where(
-        is_had_ts_bin & (y["cls_id"] != 0),
-        torch.full_like(binary_boost, 4.0),
-        binary_boost
-    )
-    loss_binary_classification = loss_binary_classification * binary_boost
+def regression_loss(y, ypred, input_pt, regression_weights):
+    """Compute per-particle kinematic losses for flattened event elements."""
+    is_particle = y["cls_id"] != 0
+    num_particles = is_particle.sum().clamp_min(1)
+    sqrt_target_pt = torch.sqrt(torch.clamp(torch.exp(y["pt"]) * input_pt, min=1e-6))
 
-    loss_pid_classification = loss_obj_id(ypred["cls_id_onehot"], y["cls_id"]).reshape(y["cls_id"].shape)
-    loss_pid_classification[y["cls_id"] == 0] *= 0
+    losses = {}
+    for feature in REGRESSION_FEATURES:
+        weight = regression_weights[feature]
+        prediction = torch.nan_to_num(ypred[feature])
+        per_element = weight * F.mse_loss(prediction, y[feature], reduction="none")
+        per_element = torch.where(is_particle, per_element, torch.zeros_like(per_element))
+        if feature in {"pt", "energy"}:
+            per_element = per_element * sqrt_target_pt
+        losses[f"Regression_{feature}"] = per_element.sum() / num_particles
 
-    loss_regression_pt = torch.nn.functional.mse_loss(ypred["pt"], y["pt"], reduction="none")
-    loss_regression_eta = 1e-2 * torch.nn.functional.mse_loss(ypred["eta"], y["eta"], reduction="none")
-    loss_regression_sin_phi = 1e-2 * torch.nn.functional.mse_loss(ypred["sin_phi"], y["sin_phi"], reduction="none")
-    loss_regression_cos_phi = 1e-2 * torch.nn.functional.mse_loss(ypred["cos_phi"], y["cos_phi"], reduction="none")
-    loss_regression_energy = torch.nn.functional.mse_loss(ypred["energy"], y["energy"], reduction="none")
+    return losses
 
-    loss_regression_pt[y["cls_id"] == 0] *= 0
-    loss_regression_eta[y["cls_id"] == 0] *= 0
-    loss_regression_sin_phi[y["cls_id"] == 0] *= 0
-    loss_regression_cos_phi[y["cls_id"] == 0] *= 0
-    loss_regression_energy[y["cls_id"] == 0] *= 0
 
-    # Energy-dependent boost for HAD_TS true n.had
-    is_had_ts    = (batch.X[:, :, 0] == 3)
-    is_true_nhad = (y["cls_id"] == 2)
-    elem_e       = batch.X[:, :, 5]
+def particle_loss(y, ypred, input_pt, regression_weights):
+    """Compute classification and regression losses over flattened particles."""
+    losses = classification_loss(y, ypred)
+    losses.update(regression_loss(y, ypred, input_pt, regression_weights))
+    return losses
 
-    energy_boost = torch.ones_like(elem_e)
-    energy_boost = torch.where(elem_e < 10,   torch.full_like(elem_e, 3.0),  energy_boost)
-    energy_boost = torch.where(elem_e >= 10,  torch.full_like(elem_e, 8.0),  energy_boost)
-    energy_boost = torch.where(elem_e >= 20,  torch.full_like(elem_e, 4.0),  energy_boost)
-    energy_boost = torch.where(elem_e >= 50,  torch.full_like(elem_e, 5.0),  energy_boost)
-    energy_boost = torch.where(elem_e >= 100, torch.full_like(elem_e, 2.0),  energy_boost)
 
-    had_boost = torch.where(
-        is_had_ts & is_true_nhad,
-        energy_boost,
-        torch.ones_like(loss_binary_classification)
-    )
-    loss_binary_classification = loss_binary_classification * had_boost
+def event_loss(y, ypred, batch, regression_weights):
+    """Compute losses for complete padded event batches.
 
-    # For HAD_TS none: zero regression loss
-    is_had_ts_none = is_had_ts & (y["cls_id"] == 0)
-    loss_regression_pt[is_had_ts_none]     *= 0
-    loss_regression_energy[is_had_ts_none] *= 0
+    The standard loss currently contains only independent particle terms.
+    Event-level terms comparing particle collections can be added here.
+    """
+    y, ypred = _mask_no_target_regression(y, ypred)
+    valid = batch.mask.bool()
 
-    loss_binary_classification[batch.mask == 0] *= 0
-    loss_pid_classification[batch.mask == 0] *= 0
-    loss_regression_pt[batch.mask == 0] *= 0
-    loss_regression_eta[batch.mask == 0] *= 0
-    loss_regression_sin_phi[batch.mask == 0] *= 0
-    loss_regression_cos_phi[batch.mask == 0] *= 0
-    loss_regression_energy[batch.mask == 0] *= 0
+    particle_targets = {
+        "cls_id": y["cls_id"][valid],
+        **{feature: y[feature][valid] for feature in REGRESSION_FEATURES},
+    }
+    particle_predictions = {
+        "cls_binary": ypred["cls_binary"][valid],
+        "cls_id_onehot": ypred["cls_id_onehot"][valid],
+        **{feature: ypred[feature][valid] for feature in REGRESSION_FEATURES},
+    }
+    input_pt = batch.X[..., 1][valid]
 
-    sqrt_target_pt = torch.sqrt(torch.exp(y["pt"]) * batch.X[:, :, 1])
-    loss_regression_pt *= sqrt_target_pt
-    loss_regression_energy *= sqrt_target_pt
+    return particle_loss(particle_targets, particle_predictions, input_pt, regression_weights)
 
-    loss["Regression_pt"]      = loss_regression_pt.sum() / npart
-    loss["Regression_eta"]     = loss_regression_eta.sum() / npart
-    loss["Regression_sin_phi"] = loss_regression_sin_phi.sum() / npart
-    loss["Regression_cos_phi"] = loss_regression_cos_phi.sum() / npart
-    loss["Regression_energy"]  = loss_regression_energy.sum() / npart
 
-    loss["Classification_binary"] = loss_binary_classification.sum() / nelem
-    loss["Classification"]        = loss_pid_classification.sum() / nelem
+def mlpf_loss(y, ypred, batch, regression_weights):
+    """Compute the standard MLPF objective for a batch of events."""
+    loss = event_loss(y, ypred, batch, regression_weights)
 
-    loss["Total"] = (
-        loss["Classification_binary"]
-        + loss["Classification"]
-        + loss["Regression_pt"]
-        + loss["Regression_eta"]
-        + loss["Regression_sin_phi"]
-        + loss["Regression_cos_phi"]
-        + loss["Regression_energy"]
-    )
-    loss_opt = loss["Total"]
+    loss_opt = sum(loss.values())
+    loss["Total"] = loss_opt
     if torch.isnan(loss_opt):
         _logger.error(ypred)
-        _logger.error(sqrt_target_pt)
         _logger.error(loss)
         raise Exception("Loss became NaN")
 
+    # store these separately but detached
     for k in loss.keys():
         loss[k] = loss[k].detach()
 
     return loss_opt, loss
 
 
+# from https://github.com/AdeelH/pytorch-multi-class-focal-loss/blob/master/focal_loss.py
 class FocalLoss(nn.Module):
+    """Focal Loss, as described in https://arxiv.org/abs/1708.02002.
+    It is essentially an enhancement to cross entropy loss and is
+    useful for classification tasks when there is a large class imbalance.
+    x is expected to contain raw, unnormalized scores for each class.
+    y is expected to contain class labels.
+    Shape:
+        - x: (batch_size, C) or (batch_size, C, d1, d2, ..., dK), K > 0.
+        - y: (batch_size,) or (batch_size, d1, d2, ..., dK), K > 0.
+    """
+
     def __init__(self, alpha: Optional[Tensor] = None, gamma: float = 0.0, reduction: str = "mean", ignore_index: int = -100):
+        """Constructor.
+        Args:
+            alpha (Tensor, optional): Weights for each class. Defaults to None.
+            gamma (float, optional): A constant, as described in the paper.
+                Defaults to 0.
+            reduction (str, optional): 'mean', 'sum' or 'none'.
+                Defaults to 'mean'.
+            ignore_index (int, optional): class label to ignore.
+                Defaults to -100.
+        """
         if reduction not in ("mean", "sum", "none"):
             raise ValueError('Reduction must be one of: "mean", "sum", "none".')
+
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
+
         self.nll_loss = nn.NLLLoss(weight=alpha, reduction="none")
 
     def __repr__(self):
@@ -177,17 +167,33 @@ class FocalLoss(nn.Module):
 
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
         if x.ndim > 2:
+            # (N, C, d1, d2, ..., dK) --> (N * d1 * ... * dK, C)
             c = x.shape[1]
             x = x.permute(0, *range(2, x.ndim), 1).reshape(-1, c)
+            # (N, d1, d2, ..., dK) --> (N * d1 * ... * dK,)
             y = y.view(-1)
+
+        # compute weighted cross entropy term: -alpha * log(pt)
+        # (alpha is already part of self.nll_loss)
         log_p = F.log_softmax(x, dim=-1)
         ce = self.nll_loss(log_p, y)
+
+        # get true class column from each row
+        # this is slow due to indexing
+        # all_rows = torch.arange(len(x))
+        # log_pt = log_p[all_rows, y]
         log_pt = torch.gather(log_p, 1, y.unsqueeze(dim=-1)).squeeze(dim=-1)
+
+        # compute focal term: (1 - pt)^gamma
         pt = log_pt.exp()
         focal_term = (1 - pt) ** self.gamma
+
+        # the full loss: -alpha * ((1 - pt)^gamma) * log(pt)
         loss = focal_term * ce
+
         if self.reduction == "mean":
             loss = loss.mean()
         elif self.reduction == "sum":
             loss = loss.sum()
+
         return loss

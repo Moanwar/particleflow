@@ -1,4 +1,6 @@
 import sys
+import random
+import resource
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,10 +9,23 @@ import torch
 import torch.utils.data
 
 from mlpf.logger import _logger
+from mlpf.conf import MLPFConfig
 
 
 # https://github.com/pytorch/pytorch/issues/11201#issuecomment-895047235
-SHARING_STRATEGY = "file_descriptor"
+# file_system strategy can be better when hitting file descriptor limits
+SHARING_STRATEGY = "file_system"
+
+try:
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    _logger.info(f"Initial RLIMIT_NOFILE: soft={soft}, hard={hard}")
+    if soft < hard:
+        _logger.info(f"Attempting to set RLIMIT_NOFILE soft limit to hard limit: {hard}")
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        _logger.info(f"New RLIMIT_NOFILE: soft={soft}, hard={hard}")
+except Exception as e:
+    _logger.warning(f"Could not set RLIMIT_NOFILE: {e}")
 
 
 class TFDSDataSource:
@@ -35,14 +50,9 @@ class TFDSDataSource:
         ret = [self.ds.dataset_info.features.deserialize_example_np(record, decoders=self.ds.decoders) for record in records]
         assert len(ret) == 1
         ret = ret[0]
-        # Drop ts_time (col 23) and ts_time_err (col 24) — sentinel values cause issues
-        ret["X"] = np.concatenate([ret["X"][:, :23], ret["X"][:, 25:]], axis=-1)
-        # Optional pT cut — keep none elements always, cut true particles below threshold
-        if self.pt_cut > 0.0:
-            pt_mask = (ret["ytarget"][:, 0] == 0) | (ret["X"][:, 1] >= self.pt_cut)
-            ret["X"]       = ret["X"][pt_mask]
-            ret["ycand"]   = ret["ycand"][pt_mask]
-            ret["ytarget"] = ret["ytarget"][pt_mask]
+        # Drop ts_time (col 23) and ts_time_err (col 24) — sentinel values
+        if ret["X"].shape[-1] > 35:
+            ret["X"] = np.concatenate([ret["X"][:, :23], ret["X"][:, 25:]], axis=-1)
 
         Xshape = ret["X"].shape
         _logger.debug(f"Getting item={item}, ds={self.ds.dataset_info.name}:{self.ds.dataset_info.config_name}, X={Xshape}")
@@ -142,33 +152,21 @@ class PFDataset:
             split: "train" or "test" (if "valid" then will use "test")
         """
         if split == "valid":
-            split = "test"
+            split = "train[80%:]"
+        elif split == "test":
+            split = "train[80%:]"
 
         try:
             builder = tfds.builder(name, data_dir=data_dir)
-        except Exception:
+        except Exception as e:
             _logger.error(
                 "Could not find dataset {} in {}, please check that you have downloaded the correct version of the dataset".format(name, data_dir)
             )
+            _logger.error(e)
             sys.exit(1)
-        # Auto-detect: if no test split exists, use 80/20 split of train
-        if split == "test":
-            try:
-                self.ds = TFDSDataSource(builder.as_data_source(split="test"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
-            except Exception:
-                _logger.warning("No test split found, using last 20% of train as test")
-                self.ds = TFDSDataSource(builder.as_data_source(split="train[80%:]"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
-        elif split == "train":
-            try:
-                builder.as_data_source(split="test")
-                # test exists → use full train
-                self.ds = TFDSDataSource(builder.as_data_source(split="train"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
-            except Exception:
-                # no test → use first 80% for train
-                _logger.warning("No test split found, using first 80% of train for training")
-                self.ds = TFDSDataSource(builder.as_data_source(split="train[:80%]"), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
-        else:
-            self.ds = TFDSDataSource(builder.as_data_source(split=split), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
+
+        _logger.debug(f"PFDataset opening dataset {name} in {builder.data_path} for split {split}")
+        self.ds = TFDSDataSource(builder.as_data_source(split=split), sort=sort, pad_to_multiple=pad_to_multiple, pt_cut=pt_cut)
 
         if num_samples and num_samples < len(self.ds):
             self.ds = torch.utils.data.Subset(self.ds, range(num_samples))
@@ -213,12 +211,110 @@ class Collater:
 
         # per-particle quantities need to be padded across events of different size
         for key_to_get in self.per_particle_keys_to_get:
-            ret[key_to_get] = torch.nn.utils.rnn.pad_sequence([torch.tensor(inp[key_to_get]).to(torch.float32) for inp in inputs], batch_first=True)
+            ret[key_to_get] = torch.nn.utils.rnn.pad_sequence(
+                [torch.as_tensor(inp[key_to_get], dtype=torch.float32) for inp in inputs], batch_first=True
+            )
 
         # per-event quantities can be stacked across events
         for key_to_get in self.per_event_keys_to_get:
-            ret[key_to_get] = torch.stack([torch.tensor(inp[key_to_get]) for inp in inputs])
+            ret[key_to_get] = torch.stack([torch.as_tensor(inp[key_to_get]) for inp in inputs])
         return PFBatch(**ret)
+
+
+class ShardConsecutiveSampler(torch.utils.data.Sampler):
+    """
+    Samples elements consecutively from each sub-dataset in a ConcatDataset.
+    This helps to minimize the number of open file descriptors when each sub-dataset
+    is backed by a separate file and the file is opened lazily.
+    """
+
+    def __init__(self, concat_dataset, shuffle=True, seed=0):
+        self.concat_dataset = concat_dataset
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+
+        shard_indices_lists = []
+        start_idx = 0
+        for end_idx in self.concat_dataset.cumulative_sizes:
+            shard_indices_lists.append(list(range(start_idx, end_idx)))
+            start_idx = end_idx
+
+        if self.shuffle:
+            # Shuffle the order of shards
+            rng.shuffle(shard_indices_lists)
+            # Shuffle within each shard
+            for shard_list in shard_indices_lists:
+                rng.shuffle(shard_list)
+
+        indices = [idx for shard_list in shard_indices_lists for idx in shard_list]
+        return iter(indices)
+
+    def __len__(self):
+        return len(self.concat_dataset)
+
+
+class DistributedShardConsecutiveSampler(torch.utils.data.distributed.DistributedSampler):
+    """
+    A distributed version of ShardConsecutiveSampler.
+    Each rank handles a subset of shards, ensuring that each node only opens its subset of shards.
+    """
+
+    def __init__(self, dataset, world_size=None, rank=None, shuffle=True, seed=0, drop_last=False):
+        super().__init__(dataset, num_replicas=world_size, rank=rank, shuffle=shuffle, seed=seed, drop_last=drop_last)
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+
+        # 1. Get all shard ranges
+        shard_ranges = []
+        start_idx = 0
+        for end_idx in self.dataset.cumulative_sizes:
+            shard_ranges.append((start_idx, end_idx))
+            start_idx = end_idx
+
+        # 2. Shuffle shard order (deterministically across nodes)
+        if self.shuffle:
+            rng.shuffle(shard_ranges)
+
+        # 3. Build the full list of indices
+        all_indices = []
+        for s_start, s_end in shard_ranges:
+            shard_indices = list(range(s_start, s_end))
+            if self.shuffle:
+                # Use a deterministic seed for internal shard shuffling that is the same across all ranks
+                # so that all_indices is identical on all ranks.
+                # We use s_start as part of the seed to ensure different shards have different internal shuffles.
+                shard_rng = random.Random(self.seed + self.epoch + s_start)
+                shard_rng.shuffle(shard_indices)
+            all_indices.extend(shard_indices)
+
+        # 4. Pad or truncate to match total_size from DistributedSampler
+        if not self.drop_last:
+            padding_size = self.total_size - len(all_indices)
+            if padding_size <= len(all_indices):
+                all_indices += all_indices[:padding_size]
+            else:
+                import math
+
+                all_indices += (all_indices * math.ceil(padding_size / len(all_indices)))[:padding_size]
+        else:
+            all_indices = all_indices[: self.total_size]
+
+        assert len(all_indices) == self.total_size
+
+        # 5. Each rank handles its own subset of indices consecutively.
+        # This keeps each node working on a small number of shards.
+        indices = all_indices[self.rank * self.num_samples : (self.rank + 1) * self.num_samples]
+        assert len(indices) == self.num_samples
+
+        return iter(indices)
 
 
 class ResumableSampler(torch.utils.data.Sampler):
@@ -235,7 +331,7 @@ class ResumableSampler(torch.utils.data.Sampler):
         return iter(indices[self.start_index :])
 
     def __len__(self):
-        return len(self.sampler)
+        return len(self.sampler) - self.start_index
 
     def load_state_dict(self, state_dict):
         self.start_index = state_dict["start_index"]
@@ -392,39 +488,57 @@ class EndlessIterator(object):
 
 def set_worker_sharing_strategy(worker_id: int) -> None:
     torch.multiprocessing.set_sharing_strategy(SHARING_STRATEGY)
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < hard:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        if worker_id == 0:
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            _logger.info(f"Worker 0 RLIMIT_NOFILE: soft={soft}, hard={hard}")
+    except Exception:
+        pass
 
 
-def get_interleaved_dataloaders(world_size, rank, config, use_cuda, use_ray, shuffle_train=True):
+def get_interleaved_dataloaders(world_size, rank, config: MLPFConfig, use_cuda, use_ray, shuffle_train=True):
     loaders = {}
     samplers = {}
     # build train, valid dataset and dataloaders
     for split in ["train", "valid"]:
         loaders[split] = []
         samplers[split] = []
-        for type_ in config[f"{split}_dataset"][config["dataset"]]:
+        dataset_config = getattr(config, f"{split}_dataset")
+        if dataset_config is None:
+            continue
+
+        for type_ in dataset_config[config.dataset.value]:
             dataset = []
-            for sample in config[f"{split}_dataset"][config["dataset"]][type_]["samples"]:
-                version = config[f"{split}_dataset"][config["dataset"]][type_]["samples"][sample]["version"]
-                split_configs = config[f"{split}_dataset"][config["dataset"]][type_]["samples"][sample]["splits"]
-                _logger.info(f"sample={sample} split={split} split_configs={split_configs}")
+            physical_ds = dataset_config[config.dataset.value][type_]
+            for sample_name, sample in physical_ds.samples.items():
+                version = sample.version
+                split_configs = sample.splits
+                _logger.info(f"sample={sample_name} split={split} split_configs={split_configs}")
 
                 nevents = None
-                if not (config[f"n{split}"] is None):
-                    nevents = config[f"n{split}"] // len(split_configs)
+                n_split_val = getattr(config, f"n{split}")
+                split_configs_to_use = list(split_configs)
+                if n_split_val is not None:
+                    if n_split_val < len(split_configs_to_use):
+                        split_configs_to_use = split_configs_to_use[:n_split_val]
+                    nevents = max(1, n_split_val // len(split_configs_to_use))
 
-                for split_config in split_configs:
+                for split_config in split_configs_to_use:
                     ds = PFDataset(
-                        config["data_dir"],
-                        f"{sample}/{split_config}:{version}",
+                        config.data_dir,
+                        f"{sample_name}/{split_config}:{version}",
                         split,
                         num_samples=nevents,
-                        sort=config["sort_data"],
-                        pad_to_multiple=config.get("pad_to_multiple_elements", None),
-                        pt_cut=config.get("pt_cut", 0.0),
+                        sort=config.sort_data,
+                        pad_to_multiple=config.pad_to_multiple_elements,
+                        pt_cut=getattr(config, 'pt_cut', 0.0),
                     ).ds
 
                     if (rank == 0) or (rank == "cpu"):
-                        _logger.info(f"{split}_dataset: {sample}, {len(ds)}", color="blue")
+                        _logger.info(f"{split}_dataset: {sample_name}, {len(ds)}", color="blue")
 
                     dataset.append(ds)
             dataset = torch.utils.data.ConcatDataset(dataset)
@@ -433,30 +547,27 @@ def get_interleaved_dataloaders(world_size, rank, config, use_cuda, use_ray, shu
             if shuffle_train:
                 shuffle = split == "train"
             if world_size > 1:
-                sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=shuffle)
+                sampler = DistributedShardConsecutiveSampler(dataset, world_size=world_size, rank=rank, shuffle=shuffle)
             else:
-                if shuffle:
-                    sampler = torch.utils.data.RandomSampler(dataset)
-                else:
-                    sampler = torch.utils.data.SequentialSampler(dataset)
+                sampler = ShardConsecutiveSampler(dataset, shuffle=shuffle)
 
             sampler = ResumableSampler(sampler)
             sampler.name = f"{type_}:{split}"
 
             # build dataloaders
-            batch_size = config[f"{split}_dataset"][config["dataset"]][type_]["batch_size"] * config["gpu_batch_multiplier"]
+            batch_size = physical_ds.batch_size * config.gpu_batch_multiplier
             loader = torch.utils.data.DataLoader(
                 dataset,
                 batch_size=batch_size,
                 collate_fn=Collater(["X", "ytarget"], ["genmet"]),
                 sampler=sampler,
-                num_workers=config["num_workers"],
-                prefetch_factor=config["prefetch_factor"],
+                num_workers=config.num_workers,
+                prefetch_factor=config.prefetch_factor,
                 # pin_memory=use_cuda,
                 # pin_memory_device="cuda:{}".format(rank) if use_cuda else "",
                 drop_last=True,
                 worker_init_fn=set_worker_sharing_strategy,
-                persistent_workers=config["num_workers"] > 0,
+                persistent_workers=config.num_workers > 0,
             )
 
             loaders[split].append(loader)
