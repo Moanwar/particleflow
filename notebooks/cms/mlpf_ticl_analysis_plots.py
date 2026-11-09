@@ -30,10 +30,16 @@ PLOT_DIR     = "mlpf_analysis_plots"
 
 _JET_DEF = fastjet.JetDefinition(fastjet.antikt_algorithm, JET_RADIUS)
 
+# typ scheme (must match postprocessing_ticl_ttbar_nopu_nanoaod.py's make_graph):
+#   1 = track (GeneralTrack)
+#   2 = GSF track
+#   3 = ticlTracksterLinks trackster 
+#   4 = EM trackster from ticlTracksterLinksSuperclusteringDNN (always EM)
 TICL_TYPE_NAMES = {
     1: "Track",
-    2: "EM Trackster",
-    4: "Hadronic Trackster",
+    2: "GSF Track",
+    3: "ticlTracksterLinks (HAD/EM mixed)",
+    4: "EM Trackster (Superclustering)",
 }
 
 def _savefig(fig, name):
@@ -352,9 +358,7 @@ def _worker_elem_matching(args):
     elem_type, en, gpid, cpid, total, plot_dir = args
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, mplhep; mplhep.style.use("CMS")
-    ticl_names = {1:"Track",2:"EM Trackster e",3:"EM Trackster g",
-                  4:"Hadronic Trackster",5:"Muon",6:"Electron Track"}
-    tname = ticl_names.get(int(elem_type), f"Type {elem_type}")
+    tname = TICL_TYPE_NAMES.get(int(elem_type), f"Type {elem_type}")
     bins = np.logspace(-1, 3, 50); fg=[]; fc=[]
     for lo,hi in zip(bins[:-1],bins[1:]):
         b=(en>=lo)&(en<hi); n=b.sum()
@@ -379,9 +383,7 @@ def _worker_elem_ptratio(args):
     elem_type, xpt, tgt_pid, tgt_pt, cand_pid, cand_pt, plot_dir = args
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, mplhep; mplhep.style.use("CMS")
-    ticl_names = {1:"Track",2:"EM Trackster e",3:"EM Trackster g",
-                  4:"Hadronic Trackster",5:"Muon",6:"Electron Track"}
-    tname = ticl_names.get(int(elem_type), f"Type {elem_type}")
+    tname = TICL_TYPE_NAMES.get(int(elem_type), f"Type {elem_type}")
     b = np.logspace(-3, 3, 100)
     fig, ax = plt.subplots(figsize=(8, 6))
     for pid_arr, pt_arr, lbl in [(tgt_pid, tgt_pt, "Truth-matched (target)"),
@@ -455,6 +457,16 @@ def plot_jet_distributions(jets_coll, plot_dir):
             if len(etas): ax.hist(np.abs(etas), bins=np.linspace(0,6,100), histtype="step", lw=2, label=name, alpha=0.7)
         except Exception: pass
     ax.set_xlabel("Jet |eta|"); ax.set_ylabel("Counts"); ax.legend(fontsize=10); ax.grid(alpha=0.3)
+    _savefig(fig, os.path.join(plot_dir, "jet_abs_eta_distributions.png"))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for name, jets in jets_coll.items():
+        if name in ["cmssw", "ytarget_nopu"]:
+            continue
+        try:
+            etas = ak.to_numpy(ak.flatten(jets.eta))
+            if len(etas): ax.hist(etas, bins=np.linspace(-6,6,100), histtype="step", lw=2, label=name, alpha=0.7)
+        except Exception: pass
+    ax.set_xlabel("Jet eta"); ax.set_ylabel("Counts"); ax.legend(fontsize=10); ax.grid(alpha=0.3)
     _savefig(fig, os.path.join(plot_dir, "jet_eta_distributions.png"))
 
 
@@ -606,11 +618,11 @@ def plot_overall_pt_distribution(arrs_awk, plot_dir):
 def plot_sumpt_per_event(arrs_awk, plot_dir):
     # PID MAP 
     SUMPT_PID_MAP = {
-        "pion":     [211],
-        "kaon":     [321, 130, 310],
+        "pion":     [211, 321],
+        "kaon":     [130, 310],
         "muon":     [13],
         "electron": [11],
-        "photon":   [22],
+        "photon":   [22, 111],
         "all":      None,              # None = no PID filter
     }
 
@@ -760,7 +772,7 @@ def print_electron_elem_type_diagnostic(arrs_flat):
 
 
 def plot_element_plots_parallel(arrs_flat, plot_dir):
-    elem_types = [t for t in [1, 2, 4]
+    elem_types = [t for t in [1, 2, 3, 4]
                   if np.any(arrs_flat["Xelem"]["typ"] == t)]
     match_tasks, ratio_tasks = [], []
     for et in elem_types:
@@ -781,6 +793,8 @@ def plot_element_plots_parallel(arrs_flat, plot_dir):
 def main():
     print("="*60); print("MLPF CMS Analysis - OPTIMISED v5"); print("="*60)
 
+    #file_pattern = "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/mix_part_0pu/pikl_files_v2/test/*.pkl"
+    #file_pattern = "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/pikl_files/test/*.pkl"
     file_pattern = "/afs/cern.ch/work/m/moanwar/private/mlpf/particleflow/mlpf/data/cms/raw/*.pkl"
     files = sorted(glob.glob(file_pattern))[:50]
     print(f"\nFound {len(files)} files")
@@ -832,7 +846,7 @@ def main():
     print("\n11. Jet response (log-log, 3 collections)...")
     plot_jet_response_loglog(jets_coll, plot_dir)
 
-    print("\n12. Element matching + pT ratio plots (types 1,2,3,4,5,6)...")
+    print("\n12. Element matching + pT ratio plots (types 1,2,3,4)...")
     plot_element_plots_parallel(arrs_flat, plot_dir)
 
     print("\n13. Electron element type diagnostic...")

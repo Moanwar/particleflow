@@ -8,8 +8,11 @@ import tensorflow_datasets as tfds
 
 tfds.disable_progress_bar()
 
-ELEM_LABELS_TICL = [0, 1, 2, 4]
-ELEM_NAMES_TICL = ["NONE", "TRACK", "EM_TS", "HAD_TS"]
+#ELEM_LABELS_TICL = [0, 1, 2, 3, 3]
+#ELEM_NAMES_TICL = ["NONE", "TRACK", "GSF_TRACK", "HAD_TS", "EM_TS"]
+
+ELEM_NAMES_TICL = ["NONE", "TRACK", "GSF_TRACK", "TICL_TS"]
+
 
 CLASS_LABELS_TICL = [0, 211, 130, 22, 11, 13]
 CLASS_NAMES_TICL = ["none", "ch.had", "n.had", "gamma", "ele", "mu"]
@@ -19,15 +22,30 @@ X_FEATURES = [
     "pt", "eta", "sin_phi", "cos_phi", "energy",
     "charge", "px", "py", "pz",
     "em_energy", "bary_z", "nhits",
-    "min_dR_track",   # min dR to nearest track
-    "near_track_pt",  # pT of nearest track
-    "shower_depth",   # energy-weighted depth
-    "sum_pt_dR10",    # sum track pT in dR<0.10
-    "n_trk_dR01",     # NEW: n tracks in dR<0.01
-    "n_trk_dR02",     # NEW: n tracks in dR<0.02
-    "n_trk_dR03",     # NEW: n tracks in dR<0.03
-    "n_trk_dR04",     # NEW: n tracks in dR<0.04
-    "n_trk_dR05",     # NEW: n tracks in dR<0.05
+    "min_dR_track",
+    "near_track_pt",
+    "shower_depth",
+    "sum_pt_dR10",
+    "n_trk_dR01",
+    "n_trk_dR02",
+    "n_trk_dR03",
+    "n_trk_dR04",
+    "n_trk_dR05",
+    "n_clusters",
+    "ts_time",
+    "ts_time_err",
+    "track_muon_type",
+    "track_muon_dt_hits",
+    "track_muon_csc_hits",
+    "track_gsf_type",
+    "track_pt_err",
+    "track_eta_err",
+    "track_phi_err",
+    "track_lambda_err",
+    "track_qoverp_err",
+    "track_vx",
+    "track_vy",
+    "track_vz",
 ]
 
 Y_FEATURES = [
@@ -36,7 +54,7 @@ Y_FEATURES = [
     "ispu", "generatorStatus", "simulatorStatus", "cp_to_track", "cp_to_cluster", "jet_idx",
 ]
 
-NUM_SPLITS = 10
+NUM_SPLITS = 50
 
 
 def map_pdgid_to_candid(pdgid, charge):
@@ -66,13 +84,15 @@ def prepare_data_ticl(fn):
         Xelem["sin_phi"] = np.sin(Xelem["phi"])
         Xelem["cos_phi"] = np.cos(Xelem["phi"])
 
+
         # Map typ to index — vectorized
         typ_arr = ak.to_numpy(Xelem["typ"]).astype(int)
-        typ_map = np.zeros(max(ELEM_LABELS_TICL)+1, dtype=np.float32)
-        for idx, label in enumerate(ELEM_LABELS_TICL):
-            typ_map[label] = idx
-        Xelem["typ_idx"] = typ_map[np.clip(typ_arr, 0, len(typ_map)-1)]
-
+        #typ_map = np.zeros(max(ELEM_LABELS_TICL)+1, dtype=np.float32)
+        #for idx, label in enumerate(ELEM_LABELS_TICL):
+        #    typ_map[label] = idx
+        #Xelem["typ_idx"] = typ_map[np.clip(typ_arr, 0, len(typ_map)-1)]
+        Xelem["typ_idx"] = np.minimum(typ_arr, 3).astype(np.float32)
+        
         # Add generatorStatus as zeros (not available in TICL data)
         ytarget["generatorStatus"] = np.zeros(len(ytarget), dtype=np.float32)
         ycand["generatorStatus"]   = np.zeros(len(ycand),   dtype=np.float32)

@@ -62,28 +62,10 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
         import pickle
         
         # Get paths from environment variables with defaults
-        input_dir=os.environ.get("INPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/pikl_files/")
-        output_base=os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/processed/")
+        input_dir=os.environ.get("INPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/nano/pkl_output_v2/")
+        output_base=os.environ.get("OUTPUT_DIR","/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/nano/processed/")
 
         # Construct full paths
-        #input_pkl = os.path.join(input_dir, "ticl_graph_data_prt.pkl")
-        #split_output_dir = pathlib.Path(output_base) / "ticl_particleGun_0pu"
-        #split_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        #print("="*50)
-        #print("PATH CONFIGURATION:")
-        #print(f"INPUT_DIR: {input_dir}")
-        #print(f"Input file: {input_pkl}")
-        #print(f"OUTPUT_DIR: {output_base}")
-        #print(f"Split files will be saved to: {split_output_dir}")
-        #print(f"Final TFDS dataset will be saved to: {self._data_dir or 'Default TFDS location'}")
-        #print("="*50)
-        
-        # Check if input file exists
-        #if not os.path.exists(input_pkl):
-        #    raise FileNotFoundError(f"Input file not found: {input_pkl}")
-
-        # Use input_dir directly (contains all PKLs)
         input_path = pathlib.Path(input_dir)
 
         print(f"Using PKL files directly from: {input_path}")
@@ -125,7 +107,7 @@ class CmsPfTiclNopu(tfds.core.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager: tfds.download.DownloadManager):
         # 1. Get input directory from environment
-        input_dir = os.environ.get("INPUT_DIR", "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/ttbar_0pu/pikl_files/")
+        input_dir = os.environ.get("INPUT_DIR", "/eos/cms/store/group/dpg_hgcal/comm_hgcal/moanwar/mlpf/nano/pkl_output_v2/")
         
         # 2. Get ALL files and SORT them to ensure consistency across parallel jobs
         all_files = sorted([str(f) for f in pathlib.Path(input_dir).glob("*.pkl")])
