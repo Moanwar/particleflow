@@ -191,7 +191,7 @@ class ParticleFeatures:
 # 0 is placeholder for padded entries (generally only when batching events together)
 ELEM_TYPES = {
     Dataset.CMS.value: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-    Dataset.CMS_TICL.value: [0, 1, 2, 3, 4],  # 1=track, 2=EM_TS, 3=HAD_TS, 4=GSF
+    Dataset.CMS_TICL.value: [0, 1, 2, 3],  # 1=track, 2=GSF_TRACK, 3=TICL_TS (EM+HAD merged)
     Dataset.CLIC.value: [0, 1, 2],  # 1 - track, 2 - cluster
     Dataset.CLD.value: [0, 1, 2],  # 1 - track, 2 - cluster
     Dataset.CLIC_HITS.value: [0, 1, 2],  # 1 - tracker hit, 2 - calorimeter hit
@@ -201,7 +201,7 @@ ELEM_TYPES = {
 # Some element types are defined, but do not exist in the dataset at all or should be excluded for physics reasons
 ELEM_TYPES_NONZERO = {
     Dataset.CMS.value: [1, 4, 5, 6, 8, 9, 10, 11],
-    Dataset.CMS_TICL.value: [1, 2, 3, 4],  # track, EM_TS, HAD_TS, GSF
+    Dataset.CMS_TICL.value: [1, 2, 3],  # track, GSF_TRACK, TICL_TS (EM+HAD merged)
     Dataset.CLIC.value: [1, 2],
     Dataset.CLD.value: [1, 2],
     Dataset.CLIC_HITS.value: [1, 2],

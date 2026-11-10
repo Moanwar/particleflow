@@ -14,14 +14,14 @@ import logging
 ELEM_TYPES = {
     "cms": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     "clic": [0, 1, 2],
-    "cms_ticl": [0, 1, 2, 3, 4],  # typ_idx values after TFDS remapping (4=GSF)
+    "cms_ticl": [0, 1, 2, 3],  # typ_idx after TFDS remapping (1=track, 2=GSF_TRACK, 3=TICL_TS)
 }
 
 # Some element types are defined, but do not exist in the dataset at all
 ELEM_TYPES_NONZERO = {
     "cms": [1, 4, 5, 6, 8, 9, 10, 11],
     "clic": [1, 2],
-    "cms_ticl": [1, 2, 3, 4],  # typ_idx values after TFDS remapping
+    "cms_ticl": [1, 2, 3],  # typ_idx after TFDS remapping (1=track, 2=GSF_TRACK, 3=TICL_TS)
 }
 
 CLASS_LABELS = {
